@@ -1,0 +1,109 @@
+/*
+  theme.css — color tokens & theming (Dark/Light)
+  ------------------------------------------------------------------
+  Usage: the UI reads colors from CSS variables defined here.
+  We default to Dark; toggle by setting <body data-theme="light|dark">.
+*/
+
+:root {
+  /* Brand accents */
+  --accent:       #7c3aed; /* purple */
+  --accent-2:     #10b981; /* green */
+  --warn:         #f59e0b; /* amber */
+  --ok:           #22c55e; /* lime */
+
+  /* Shadows & radii */
+  --radius: 14px;
+  --shadow-lg: 0 12px 40px rgba(0,0,0,.45);
+  --shadow-md: 0 10px 30px rgba(0,0,0,.35);
+
+  /* Typography */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji","Segoe UI Emoji";
+
+  /* Spacing */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px;  --space-4: 16px;  --space-5: 20px;  --space-6: 24px;  --space-8: 32px;
+}
+
+/* ------------------------------
+   DARK THEME (default)
+--------------------------------- */
+body,
+body[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:        #0b1020;
+  --bg-2:      #0f152b;
+  --panel:     #111831;
+  --panel-2:   #0f1835;
+  --text:      #e7ebf6;
+  --muted:     #a1acc9;
+  --border:    #27314f;
+  --line:      #1f2640;
+  --button:    #18224b;
+  --button-ghost: transparent;
+
+  --thumb-bg:  #0b0f24;
+
+  background:
+    radial-gradient(1200px 900px at 15% 10%, #16214a 0%, rgba(22,33,74,0) 60%) no-repeat,
+    linear-gradient(180deg, #0b1020, #0a1022 60%, #0b1228 100%);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+/* ------------------------------
+   LIGHT THEME
+--------------------------------- */
+body[data-theme="light"] {
+  color-scheme: light;
+  --bg:        #f7f8fc;
+  --bg-2:      #eef1fb;
+  --panel:     #ffffff;
+  --panel-2:   #f6f7fd;
+  --text:      #0e152c;
+  --muted:     #5b6685;
+  --border:    #dde2f2;
+  --line:      #e6eaf7;
+  --button:    #f1f3fe;
+  --button-ghost: transparent;
+
+  --thumb-bg:  #f0f3ff;
+
+  background:
+    radial-gradient(1200px 900px at 15% 10%, rgba(124,58,237,.12) 0%, rgba(124,58,237,0) 60%) no-repeat,
+    linear-gradient(180deg, #f7f8fc, #eef1fb 60%, #e8ecfb 100%);
+  color: var(--text);
+}
+
+/* ------------------------------
+   TOKENS → COMPONENT SURFACES
+   (structure styles live in app.css)
+--------------------------------- */
+.app-header { background: var(--panel); border-bottom: 1px solid var(--border); }
+.badge, .pill { border: 1px solid var(--border); color: var(--muted); background: var(--panel-2); }
+.panel { background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0)), var(--panel); border:1px solid var(--border); box-shadow: var(--shadow-md); border-radius: var(--radius); }
+.hd { color: var(--text); }
+.help { color: var(--muted); }
+
+.btn { background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0)), var(--button); border:1px solid color-mix(in oklab, var(--border) 90%, black 10%); color: var(--text); border-radius: 10px; }
+.btn.primary { background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0)), var(--accent); border-color: transparent; color: white; }
+.btn.success { background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0)), var(--accent-2); border-color: transparent; color: #06120c; }
+.btn.ghost { background: var(--button-ghost); border:1px solid var(--border); }
+
+.uploader { border:2px dashed color-mix(in oklab, var(--border) 92%, white 8%); background: var(--panel-2); }
+.uploader.drag { border-color: var(--accent-2); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-2) 30%, transparent); }
+
+.thumbs .thumb { background: var(--thumb-bg); border:1px solid var(--border); }
+
+.select, .input { background: var(--panel-2); color: var(--text); border:1px solid var(--border); border-radius: 10px; }
+
+.progress { background: color-mix(in oklab, var(--panel) 70%, black 30%); border:1px solid var(--border); }
+.progress > span { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+
+.canvasFrame { background:#000; border:1px solid var(--line); box-shadow: var(--shadow-lg); border-radius: 16px; }
+
+/* Theme toggle pill */
+.theme-toggle { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid var(--border); border-radius:999px; cursor:pointer; user-select:none; color: var(--muted); background: var(--panel-2); }
+.theme-toggle input { appearance:none; width:0; height:0; position:absolute; }
+
+/* Utility */
+.hidden { display:none !important; }

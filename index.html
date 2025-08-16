@@ -1,1 +1,257 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Slideshow Maker (Modular)</title>
+  <!-- Styles -->
+  <link rel="stylesheet" href="./css/theme.css">
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body data-theme="dark">
+  <header class="app-header">
+    <div class="title">
+      <h1>Slideshow Maker</h1>
+      <span class="badge">Modular Build</span>
+    </div>
+    <div class="header-actions">
+      <div class="pill" id="infoCount">0 photos</div>
+      <div class="pill" id="infoPages">0 pages</div>
+      <div class="pill" id="infoDur">00:00</div>
+      <div class="pill" id="infoRes">1080×1080</div>
+      <label class="theme-toggle" title="Theme">
+        <input id="themeToggle" type="checkbox" />
+        <span>🌙 / ☀️</span>
+      </label>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <!-- Controls -->
+    <aside class="panel controls" id="controls">
+      <section class="block">
+        <div class="hd"><b>Photos</b></div>
+        <div class="bd">
+          <div id="drop" class="uploader" tabindex="0">
+            <div class="big">Drag & drop images</div>
+            <div>or</div>
+            <div style="margin-top:10px">
+              <button class="btn" id="pickBtn">Choose images</button>
+              <input id="fileInput" type="file" accept="image/*" multiple hidden>
+            </div>
+            <div class="help" style="margin-top:10px">Reorder by dragging thumbnails. Add more anytime.</div>
+          </div>
+          <div class="thumbs" id="thumbs"></div>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="hd"><b>Output & Layout</b></div>
+        <div class="bd grid-2">
+          <label>Aspect ratio & resolution
+            <select id="resPreset" class="select">
+              <option value="sq">Square — 1080×1080 (1:1)</option>
+              <option value="169">Landscape — 1920×1080 (16:9)</option>
+              <option value="916">Portrait — 1080×1920 (9:16)</option>
+              <option value="54L">Landscape — 1350×1080 (5:4)</option>
+              <option value="45P">Portrait — 1080×1350 (4:5)</option>
+              <option value="32L">Landscape — 1620×1080 (3:2)</option>
+              <option value="23P">Portrait — 1080×1620 (2:3)</option>
+            </select>
+          </label>
+
+          <label>Layout mode
+            <select id="layoutMode" class="select">
+              <option value="fixed">Fixed layout</option>
+              <option value="random">Random from selected</option>
+              <option value="playlist">Playlist (per‑page)</option>
+            </select>
+          </label>
+
+          <label>Layout (when Fixed)
+            <select id="layout" class="select">
+              <option value="single">Single image</option>
+              <option value="side">Side‑by‑side (2)</option>
+              <option value="triptych">Triptych (3)</option>
+              <option value="grid2x2">Grid 2×2 (4)</option>
+            </select>
+          </label>
+
+          <fieldset id="layoutPick" class="fieldset">
+            <legend>Random layout pool</legend>
+            <label><input type="checkbox" value="single" checked> Single</label>
+            <label><input type="checkbox" value="side" checked> Side‑by‑side</label>
+            <label><input type="checkbox" value="triptych" checked> Triptych</label>
+            <label><input type="checkbox" value="grid2x2" checked> Grid 2×2</label>
+          </fieldset>
+
+          <div id="playlistWrap" class="playlist-wrap">
+            <div class="playlist-bar">
+              <button id="addPageBtn" class="btn small">+ Add page</button>
+              <button id="clearPlaylistBtn" class="btn small ghost">Clear</button>
+            </div>
+            <div id="playlist" class="playlist"></div>
+          </div>
+
+          <label>Fit mode
+            <select id="fitMode" class="select">
+              <option value="cover">Fill (crop)</option>
+              <option value="contain">Fit (letterbox)</option>
+            </select>
+          </label>
+
+          <label>Padding (px)
+            <input id="padPx" type="range" min="0" max="60" step="1" value="16">
+            <span class="val" id="valPad">16 px</span>
+          </label>
+
+          <label>Corner radius (px)
+            <input id="radiusPx" type="range" min="0" max="40" step="1" value="10">
+            <span class="val" id="valRadius">10 px</span>
+          </label>
+
+          <label>Background style
+            <select id="bgStyle" class="select">
+              <option value="solid">Solid color</option>
+              <option value="blur">Blur from image</option>
+            </select>
+          </label>
+
+          <label>Background color
+            <input id="bgColor" class="input" type="color" value="#000000">
+          </label>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="hd"><b>Effects</b></div>
+        <div class="bd grid-2">
+          <label>Motion (Ken Burns)
+            <select id="motionMode" class="select">
+              <option value="off">Off</option>
+              <option value="zoom-in">Zoom In</option>
+              <option value="zoom-out">Zoom Out</option>
+              <option value="pan-left">Pan Left</option>
+              <option value="pan-right">Pan Right</option>
+              <option value="pan-up">Pan Up</option>
+              <option value="pan-down">Pan Down</option>
+              <option value="random">Random per page</option>
+            </select>
+          </label>
+
+          <label>Motion amount
+            <input id="motionAmt" type="range" min="0" max="0.35" step="0.01" value="0.12">
+            <span class="val" id="valMotionAmt">0.12×</span>
+          </label>
+
+          <label>Motion speed
+            <input id="motionSpeed" type="range" min="0.25" max="3" step="0.05" value="1">
+            <span class="val" id="valMotionSpeed">1.00×</span>
+          </label>
+
+          <fieldset class="fieldset">
+            <legend>Filters (can combine)</legend>
+            <label><input type="checkbox" value="grayscale" class="filterPick"> Grayscale</label>
+            <label><input type="checkbox" value="sepia" class="filterPick"> Sepia</label>
+            <label><input type="checkbox" value="warm" class="filterPick"> Warm</label>
+            <label><input type="checkbox" value="cool" class="filterPick"> Cool</label>
+            <label><input type="checkbox" value="contrast" class="filterPick"> Contrast+</label>
+            <label><input type="checkbox" value="saturate" class="filterPick"> Saturate+</label>
+            <label><input type="checkbox" value="blur" class="filterPick"> Subtle Blur</label>
+            <label><input type="checkbox" value="vignette" class="filterPick"> Vignette</label>
+            <div class="row">
+              <label>Randomise filters <input type="checkbox" id="filtersRandom"></label>
+              <button id="reshuffleFilters" class="btn small ghost" title="Reshuffle">↻</button>
+            </div>
+          </fieldset>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="hd"><b>Timing</b></div>
+        <div class="bd grid-2">
+          <label>Transition type
+            <select id="transitionType" class="select">
+              <option value="crossfade">Crossfade</option>
+              <option value="slide-left">Slide Left</option>
+              <option value="slide-right">Slide Right</option>
+              <option value="slide-up">Slide Up</option>
+              <option value="slide-down">Slide Down</option>
+              <option value="none">None (hard cut)</option>
+            </select>
+          </label>
+
+          <label>Transition length (s)
+            <input id="transitionSec" type="range" min="0" max="3" step="0.1" value="1.0">
+            <span class="val" id="valTransition">1.0s</span>
+          </label>
+
+          <label>Page length (s)
+            <input id="holdSec" type="range" min="0.5" max="12" step="0.1" value="2.5">
+            <span class="val" id="valHold">2.5s</span>
+          </label>
+
+          <label>Frame rate
+            <select id="fps" class="select">
+              <option value="24">24 fps</option>
+              <option value="30" selected>30 fps</option>
+              <option value="60">60 fps</option>
+            </select>
+          </label>
+
+          <label>Video bitrate
+            <input id="bitrate" type="range" min="2000000" max="15000000" step="500000" value="8000000">
+            <span class="val" id="valBitrate">8.0 Mbps</span>
+          </label>
+
+          <label>Loop preview
+            <select id="loopPrev" class="select">
+              <option value="1" selected>Yes</option>
+              <option value="0">No</option>
+            </select>
+          </label>
+        </div>
+        <div class="seek">
+          <span class="time" id="currTime">00:00</span>
+          <input id="seek" type="range" min="0" max="0" value="0" step="0.01">
+          <span class="time" id="totalTime">00:00</span>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="hd"><b>Preview</b></div>
+        <div class="bd bar">
+          <button id="playBtn" class="btn primary">▶ Play</button>
+          <button id="pauseBtn" class="btn ghost">⏸ Pause</button>
+          <button id="stopBtn" class="btn ghost">⏹ Stop</button>
+        </div>
+      </section>
+
+      <section class="block">
+        <div class="hd"><b>Export</b></div>
+        <div class="bd">
+          <div class="progress"><span id="progBar"></span></div>
+          <div class="bar">
+            <button id="exportBtn" class="btn success">Render & Download</button>
+            <span class="help" id="status">Ready.</span>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Preview -->
+    <main class="panel preview">
+      <div class="hd"><b>Live Preview</b><span class="help">What you see is what you export</span></div>
+      <div class="bd canvasWrap">
+        <div class="canvasFrame">
+          <canvas id="stage" width="1080" height="1080"></canvas>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Scripts (ES Modules) -->
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

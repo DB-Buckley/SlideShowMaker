@@ -1,13 +1,16 @@
-// exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm)
-// Robust local-first loader: auto-detects /public/vendor/ffmpeg/ under any base path.
-// Uses anchor download (no user-gesture issues).
+// exporter.js — Deterministic WebM export + robust MP4 conversion (ffmpeg.wasm)
+// - Frame-stepped render (no MediaRecorder).
+// - COI-aware ffmpeg loader: MT (fast) if crossOriginIsolated, else ST.
+// - MP4 recipe fallbacks (libx264 → mpeg4 → baseline).
+// - Anchor-only downloads (no user gesture needed).
+
 import { waitNextFrame } from './utils.js';
 
 /*** Minimal WebM muxer for VP9 CFR ***/
 class WebMMuxer {
   constructor({width,height,fps,codec='V_VP9'}={}) {
     this.width=width; this.height=height; this.fps=fps; this.codec=codec;
-    this.timecodeScale=1_000_000; // 1ms
+    this.timecodeScale=1_000_000; // 1 ms
     this.segment=[]; this.cluster=[]; this.clusterTimecode=0; this.frameCount=0;
     this._writeHeader();
   }
@@ -15,15 +18,20 @@ class WebMMuxer {
   _u16(v){ const b=new Uint8Array(2); new DataView(b.buffer).setUint16(0,v); return b; }
   _u32(v){ const b=new Uint8Array(4); new DataView(b.buffer).setUint32(0,v); return b; }
   _vint(n){ const b=new Uint8Array(8); for(let i=7;i>=0;i--){ b[i]=n&0xff; n>>>=8; } b[0]|=0x01; return b; }
-  _chunk(id,data){ const bytes = data instanceof Blob ? data : new Uint8Array(data); return new Blob([new Uint8Array(id), this._vint(bytes.size ?? bytes.length), bytes]); }
+  _chunk(id,data){
+    const bytes = data instanceof Blob ? data : new Uint8Array(data);
+    return new Blob([new Uint8Array(id), this._vint(bytes.size ?? bytes.length), bytes]);
+  }
   _writeHeader(){
     const EBML = this._chunk([0x1A,0x45,0xDF,0xA3], new Uint8Array([
       0x42,0x86,0x81,0x01, 0x42,0xF7,0x81,0x01, 0x42,0xF2,0x81,0x04,
       0x42,0xF3,0x81,0x08, 0x42,0x82,0x84,0x77,0x65,0x62,0x6D
     ]));
-    const Video = new Blob([ new Uint8Array([0xE0]), this._vint(10),
+    const Video = new Blob([
+      new Uint8Array([0xE0]), this._vint(10),
       new Uint8Array([0xB0,0x82]), this._u16(this.width),
-      new Uint8Array([0xBA,0x82]), this._u16(this.height) ]);
+      new Uint8Array([0xBA,0x82]), this._u16(this.height)
+    ]);
     const CodecID = this._chunk([0x86], this._str(this.codec));
     const TrackEntry = new Blob([
       new Uint8Array([0xAE]), this._vint(35 + CodecID.size + Video.size),
@@ -76,39 +84,16 @@ class WebMMuxer {
   finalize(){ this._flushCluster(); return new Blob(this.segment, { type:'video/webm' }); }
 }
 
-function supportsWebCodecs(){ return 'VideoEncoder' in window && 'VideoFrame' in window; }
+/* ---------- FFmpeg Loader (MT/ST aware) ---------- */
+const IS_COI = typeof self !== 'undefined' && !!self.crossOriginIsolated;
+const BASE_MT = (typeof window !== 'undefined' && window.__FFMPEG_BASE_MT) || '/vendor/ffmpeg/';     // multi-thread core path
+const BASE_ST = (typeof window !== 'undefined' && window.__FFMPEG_BASE_ST) || '/vendor/ffmpeg-st/';  // single-thread core path
+const CDN1 = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/';
+const CDN2 = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/';
 
-/* ---------- Local-first FFmpeg loader with smart base detection ---------- */
-function guessLocalBases(){
-  // 1) Explicit override if you set: <script>window.__FFMPEG_BASE='/myapp/vendor/ffmpeg/'</script>
-  const exp = (typeof window !== 'undefined' && window.__FFMPEG_BASE) ? [window.__FFMPEG_BASE] : [];
-
-  // 2) Relative to current page (works under any subpath): ./vendor/ffmpeg/ and vendor/ffmpeg/
-  const rel = ['./vendor/ffmpeg/', 'vendor/ffmpeg/'];
-
-  // 3) Absolute from site root (works if app is at '/'): /vendor/ffmpeg/
-  const abs = ['/vendor/ffmpeg/'];
-
-  // 4) Relative to the script that imported this module (when available)
-  let scriptRel = [];
-  try{
-    const scripts = Array.from(document.getElementsByTagName('script'));
-    const mod = scripts.find(s=> s.type === 'module' && s.src.includes('/js/main.js')) || scripts[scripts.length-1];
-    if (mod && mod.src){
-      const url = new URL(mod.src, document.baseURI);
-      const basePath = url.pathname.replace(/\/js\/[^/]*$/, '/');
-      scriptRel = [ basePath + 'vendor/ffmpeg/' ];
-    }
-  }catch{}
-
-  return [...exp, ...scriptRel, ...rel, ...abs];
-}
-
-const FFMPEG_BASES = [
-  ...guessLocalBases(),
-  'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/',
-  'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/'
-];
+const FFMPEG_BASES = IS_COI
+  ? [BASE_MT, CDN1, CDN2]  // fast MT core when cross-origin isolated
+  : [BASE_ST, CDN1, CDN2]; // fallback ST core otherwise
 
 async function loadFFmpegBundle(updateDlArea){
   if (window.FFmpeg?.createFFmpeg) return { createFFmpeg: window.FFmpeg.createFFmpeg, base: null };
@@ -123,7 +108,7 @@ async function loadFFmpegBundle(updateDlArea){
         s.onerror = ()=> reject(new Error('Failed to load ' + s.src));
         document.head.appendChild(s);
       });
-      if (!window.FFmpeg?.createFFmpeg) throw new Error('ffmpeg.min.js loaded, but API missing.');
+      if (!window.FFmpeg?.createFFmpeg) throw new Error('ffmpeg.min.js loaded but API missing.');
       return { createFFmpeg: window.FFmpeg.createFFmpeg, base };
     }catch(e){
       lastErr = e;
@@ -133,6 +118,19 @@ async function loadFFmpegBundle(updateDlArea){
   throw lastErr || new Error('Could not load FFmpeg from any source.');
 }
 
+async function createFFmpegInstance(onProgress, setStatus){
+  const { createFFmpeg, base } = await loadFFmpegBundle(setStatus);
+  const chosenBase = base || FFMPEG_BASES[0];
+  const corePath = chosenBase + 'ffmpeg-core.js';
+  const ffmpeg = createFFmpeg({
+    log: true,
+    corePath,
+    progress: p => { if (onProgress && p && typeof p.ratio === 'number') onProgress(p); }
+  });
+  await ffmpeg.load();
+  return ffmpeg;
+}
+
 /* ---------------- Exporter ---------------- */
 export class Exporter{
   constructor(canvas, renderer, state, els){
@@ -140,9 +138,8 @@ export class Exporter{
     this.lastWebM = null;
   }
 
-  // Deterministic WebM (VP9) export
   async exportWebM(){
-    if (!supportsWebCodecs()){
+    if (!('VideoEncoder' in window) || !('VideoFrame' in window)){
       throw new Error('WebCodecs not supported in this browser.');
     }
     const fps = +this.state.settings.fps;
@@ -172,6 +169,7 @@ export class Exporter{
     }
     await encoder.flush();
 
+    // Mux to WebM
     const muxer = new WebMMuxer({ width:w, height:h, fps, codec:'V_VP9' });
     for (const c of encoded){
       const data = new Uint8Array(c.byteLength); c.copyTo(data);
@@ -180,83 +178,63 @@ export class Exporter{
     const webm = muxer.finalize();
     this.lastWebM = webm;
 
-    await this._download(webm, this._fileName('webm'));
+    await this._download(webm, this.fileName('webm')); // <- both fileName and _fileName exist
     updateProg(totalFrames);
     return webm;
   }
 
- // -------- WebM → MP4 (ffmpeg.wasm) with robust fallbacks --------
-async convertWebMtoMP4(webmBlob, onProgress){
-  // 1) Load ffmpeg (whatever loader you already have in exporter.js)
-  const setStatus = (msg)=>{ this.els?.dlArea && (this.els.dlArea.innerHTML = msg); };
+  // -------- WebM → MP4 with robust fallbacks --------
+  async convertWebMtoMP4(webmBlob, onProgress){
+    const setStatus = (msg)=>{ this.els?.dlArea && (this.els.dlArea.innerHTML = msg); };
 
-  let loader;
-  try{
-    // If your exporter already has "loadFFmpegBundle" + picks corePath, keep using it:
-    loader = await loadFFmpegBundle(setStatus);
-  }catch(e){
-    throw new Error('Failed to load FFmpeg (local/CDN). ' + e.message);
-  }
-
-  const { createFFmpeg, base } = loader;
-  // If your exporter already computes corePath elsewhere, reuse it. Otherwise:
-  const chosenBase = base || (typeof window !== 'undefined' && (window.__FFMPEG_BASE_MT || window.__FFMPEG_BASE_ST)) || '/vendor/ffmpeg/';
-  const corePath = chosenBase + 'ffmpeg-core.js';
-
-  const ffmpeg = createFFmpeg({
-    log: true,
-    corePath,
-    progress: p => { if (onProgress && p && typeof p.ratio === 'number') onProgress(p); }
-  });
-
-  try { await ffmpeg.load(); }
-  catch(e) { throw new Error('FFmpeg core failed to load from ' + corePath + '. ' + e.message); }
-
-  // 2) Write input
-  const inName = 'in.webm';
-  const outName = 'out.mp4';
-  const data = new Uint8Array(await webmBlob.arrayBuffer());
-  ffmpeg.FS('writeFile', inName, data);
-
-  // 3) Try multiple recipes (some cores don’t have libx264). We add -y to overwrite.
-  //    Order: libx264 (best), then mpeg4 (widely supported), then a strict baseline.
-  const recipes = [
-    // High quality H.264 (needs libx264 in core)
-    ['-y','-i',inName,'-c:v','libx264','-pix_fmt','yuv420p','-crf','18','-preset','veryfast','-movflags','+faststart',outName],
-    // Fallback: MPEG-4 Part 2 (works everywhere; larger files but compatible)
-    ['-y','-i',inName,'-c:v','mpeg4','-qscale:v','3','-pix_fmt','yuv420p','-movflags','+faststart',outName],
-    // H.264 baseline-ish (if libx264 present but picky)
-    ['-y','-i',inName,'-c:v','libx264','-profile:v','baseline','-level','3.0','-pix_fmt','yuv420p','-crf','20','-preset','veryfast','-movflags','+faststart',outName],
-  ];
-
-  // 4) Try each recipe until one produces out.mp4
-  let lastErr = null;
-  for (const args of recipes){
+    let ffmpeg;
     try{
-      await ffmpeg.run(...args);
-      // If run didn't throw, try to read the result
-      const out = ffmpeg.FS('readFile', outName);
-      const blob = new Blob([out.buffer], { type:'video/mp4' });
-      // cleanup
-      try{ ffmpeg.FS('unlink', inName); }catch{}
-      try{ ffmpeg.FS('unlink', outName); }catch{}
-      return blob;
+      ffmpeg = await createFFmpegInstance(onProgress, setStatus);
     }catch(e){
-      lastErr = e;
-      // Ensure any stale output is removed before next attempt
-      try{ ffmpeg.FS('unlink', outName); }catch{}
+      throw new Error('Failed to load FFmpeg (local or CDN). ' + e.message);
     }
+
+    const inName = 'in.webm';
+    const outName = 'out.mp4';
+    const data = new Uint8Array(await webmBlob.arrayBuffer());
+    ffmpeg.FS('writeFile', inName, data);
+
+    // Try multiple recipes
+    const recipes = [
+      ['-y','-i',inName,'-c:v','libx264','-pix_fmt','yuv420p','-crf','18','-preset','veryfast','-movflags','+faststart',outName],
+      ['-y','-i',inName,'-c:v','mpeg4','-qscale:v','3','-pix_fmt','yuv420p','-movflags','+faststart',outName],
+      ['-y','-i',inName,'-c:v','libx264','-profile:v','baseline','-level','3.0','-pix_fmt','yuv420p','-crf','20','-preset','veryfast','-movflags','+faststart',outName],
+    ];
+
+    let lastErr = null;
+    for (const args of recipes){
+      try{
+        await ffmpeg.run(...args);
+        const out = ffmpeg.FS('readFile', outName);
+        const blob = new Blob([out.buffer], { type:'video/mp4' });
+        try{ ffmpeg.FS('unlink', inName); }catch{}
+        try{ ffmpeg.FS('unlink', outName); }catch{}
+        return blob;
+      }catch(e){
+        lastErr = e;
+        try{ ffmpeg.FS('unlink', outName); }catch{}
+      }
+    }
+
+    throw new Error(
+      'FFmpeg failed to create out.mp4. Your wasm core may miss required encoders. ' +
+      'Enable COOP/COEP to use the multi-thread core or add the single-thread core-st and set window.__FFMPEG_BASE_ST.'
+    );
   }
 
-  // 5) If we get here, no recipe worked
-  throw new Error(
-    'FFmpeg failed to create out.mp4. Your ffmpeg.wasm build may lack the required encoder. ' +
-    'Try enabling COOP/COEP and the multi-thread core, or add the single-thread core-st and ensure /public/vendor/ffmpeg-st/ is set.'
-  );
-}
+  // ---- Filenaming helpers (both names to avoid UI mismatches) ----
+  fileName(ext){
+    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    return `slideshow-${stamp}.${ext}`;
+  }
+  _fileName(ext){ return this.fileName(ext); } // backward-compat
 
-
-  // Anchor-only download
+  // ---- Anchor-only download (no gesture needed) ----
   async _download(blob, name){
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);

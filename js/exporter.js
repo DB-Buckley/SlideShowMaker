@@ -19,7 +19,6 @@ export class Exporter{
     if (supportsMp4Recorder()){
       return await this._exportMp4MediaRecorder();
     } else {
-      // Clear message and helper if MP4 isn’t available in this browser.
       const msg = [
         'MP4 export is not supported in this browser.',
         'Try Safari (macOS/iOS) or another browser that supports MediaRecorder MP4.',
@@ -27,13 +26,12 @@ export class Exporter{
       ].join(' ');
       console.warn(msg);
       if (this.els && this.els.dlArea){
-        // Offer a WebM export + conversion tip so users never get stuck.
         this.els.dlArea.innerHTML = `
           <div style="margin-top:8px">
-            <b>MP4 not available here.</b>
+            <b>MP4 not available in this browser.</b>
             <button id="exportWebMBtn" class="btn" style="margin-left:8px">Export WebM</button>
             <div class="help" style="margin-top:6px">
-              Convert WebM → MP4 e.g.:
+              Convert WebM → MP4, for example:
               <code>ffmpeg -i input.webm -c:v libx264 -crf 18 -preset veryfast output.mp4</code>
             </div>
           </div>`;
@@ -51,7 +49,7 @@ export class Exporter{
 
   async _exportMp4MediaRecorder(){
     const fps = this.state.settings.fps;
-    const bits = this.state.settings.bitrate; // already in bps
+    const bits = this.state.settings.bitrate; // bps
     const mime = 'video/mp4;codecs=avc1.42E01E';
 
     const stream = this.canvas.captureStream(fps);
@@ -110,7 +108,6 @@ export class Exporter{
   }
 
   async _download(blob, name){
-    // Try the file picker first (great UX), then anchor fallback
     try{
       if ('showSaveFilePicker' in window){
         const handle = await window.showSaveFilePicker({
@@ -127,7 +124,6 @@ export class Exporter{
       console.warn('showSaveFilePicker failed:', e);
     }
 
-    // Anchor fallback
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;

@@ -1,8 +1,10 @@
-// ui.js — uploader + controls bindings
+// ui.js — uploader + controls bindings with auto-rotate + duplicate removal
 // ------------------------------------------------------------
 import { createState } from './state.js';
 import { Renderer } from './renderer.js';
 import { Exporter } from './exporter.js';
+import { readExifOrientation, drawWithOrientation } from './exif.js';
+import { sha256Hex, aHashFromCanvas, hammingDistance64 } from './hash.js';
 
 function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
 function fmtTime(sec){ if (!isFinite(sec)||sec<=0) return '00:00'; const m=Math.floor(sec/60), s=Math.round(sec%60); return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
@@ -39,6 +41,21 @@ export async function bootstrap(){
   const renderer = new Renderer(els.canvas, state);
   const exporter = new Exporter(els.canvas, renderer, state, els);
 
+  // duplicate tracking
+  const exactHashes = new Set();     // SHA-256 of file bytes
+  const perceptual = [];             // {hash:BigInt, idx:number}
+  const PHASH_THRESHOLD = 5n;        // <=5 bits difference → consider duplicate
+
+  // toast helper
+  function toast(msg){
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    requestAnimationFrame(()=> t.classList.add('show'));
+    setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=> t.remove(), 300); }, 2200);
+  }
+
   // --- Uploader
   els.pickBtn.onclick = ()=> els.fileInput.click();
   els.fileInput.onchange = ()=> addFiles(els.fileInput.files);
@@ -46,14 +63,57 @@ export async function bootstrap(){
   ['dragleave','drop'].forEach(ev=> els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3a3a3a'; }));
   els.drop.addEventListener('drop', e=> addFiles(e.dataTransfer.files));
 
-  function addFiles(files){
+  async function addFiles(files){
     const list = Array.from(files||[]).filter(f=> f.type && f.type.startsWith('image/'));
-    list.forEach(f=> {
-      const url = URL.createObjectURL(f);
-      const img = new Image();
-      img.src = url;
-      state.slides.push({ file:f, url, img });
-    });
+    let skipped = 0, added = 0;
+
+    for (const f of list){
+      // Exact duplicate (file hash) check
+      const fbuf = await f.arrayBuffer();
+      const sha = await sha256Hex(fbuf);
+      if (exactHashes.has(sha)){ skipped++; continue; }
+
+      // Load image for rotation + perceptual hash
+      const imgUrl = URL.createObjectURL(new Blob([fbuf], { type:f.type }));
+      const img = await new Promise((res, rej)=>{
+        const im = new Image(); im.onload = ()=> res(im); im.onerror = rej; im.src = imgUrl;
+      });
+
+      // Read orientation (only meaningful for JPEGs)
+      let orientation = 1;
+      try{ orientation = await readExifOrientation(fbuf); }catch{ orientation = 1; }
+
+      // Draw corrected onto offscreen canvas at preview/export stage size for consistent hashing
+      const off = document.createElement('canvas');
+      off.width = els.canvas.width; off.height = els.canvas.height;
+      const octx = off.getContext('2d');
+      octx.fillStyle = '#000'; octx.fillRect(0,0,off.width,off.height);
+      drawWithOrientation(octx, img, orientation, off.width, off.height);
+
+      // Perceptual hash
+      const ph = aHashFromCanvas(off);
+      // Check similarity with existing perceptual hashes
+      const isNearDup = perceptual.some(p=> hammingDistance64(p.hash, ph) <= PHASH_THRESHOLD);
+      if (isNearDup){ skipped++; continue; }
+
+      // Convert offscreen to blob for consistent orientation in renderer
+      const blob = await new Promise(res=> off.toBlob(res, 'image/jpeg', 0.9));
+      const fixedUrl = URL.createObjectURL(blob);
+      const fixedImg = await new Promise((res, rej)=>{
+        const im = new Image(); im.onload = ()=> res(im); im.onerror = rej; im.src = fixedUrl;
+      });
+
+      // Track hashes
+      exactHashes.add(sha);
+      perceptual.push({ hash: ph, idx: state.slides.length });
+
+      state.slides.push({ file:f, url: fixedUrl, img: fixedImg });
+      added++;
+    }
+
+    if (skipped) toast(`Skipped ${skipped} duplicate${skipped>1?'s':''}`);
+    if (added) toast(`Added ${added} photo${added>1?'s':''}`);
+
     renderThumbs();
     updateTotal();
     state.emit('slides:changed');

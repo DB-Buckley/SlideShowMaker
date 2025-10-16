@@ -14,7 +14,7 @@ function easeInOutQuad(t){ t=clamp(t,0,1); return t<0.5? 2*t*t : 1 - Math.pow(-2
 export class Renderer{
   constructor(canvas, state){
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { desynchronized:true });
+    this.ctx = canvas.getContext('2d', { desynchronized:true, willReadFrequently:false });
     this.state = state;
     this.setRes(state.settings.resPreset);
   }

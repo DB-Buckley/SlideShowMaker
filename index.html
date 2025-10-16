@@ -26,7 +26,9 @@
               <button class="btn" id="pickBtn">Choose images</button>
               <input id="fileInput" type="file" accept="image/*" multiple hidden>
             </div>
-            <div class="help" style="margin-top:10px">Auto-rotates, skips duplicates, and allows drag-reorder.</div>
+            <div class="help" style="margin-top:10px">
+              Auto-rotates, skips duplicates, drag to reorder.
+            </div>
           </div>
           <div class="thumbs" id="thumbs"></div>
         </div>
@@ -87,6 +89,7 @@
           <button id="playBtn" class="btn primary">▶ Play</button>
           <button id="pauseBtn" class="btn ghost">⏸ Pause</button>
           <button id="stopBtn" class="btn ghost">⏹ Stop</button>
+          <button id="adjustBtn" class="btn">🖐️ Adjust position</button>
         </div>
       </section>
 
@@ -95,17 +98,21 @@
         <div class="bd">
           <div class="progress"><span id="progBar"></span></div>
           <div class="bar">
-            <button id="exportBtn" class="btn">Export (WebM/MP4*)</button>
-            <span class="help">* MP4 requires browser/OS support; otherwise WebM is used.</span>
+            <button id="exportBtn" class="btn">Export MP4</button>
+            <span class="help">MP4 requires browser support for MediaRecorder MP4.</span>
           </div>
+          <div id="dlArea" class="help" style="margin-top:8px"></div>
         </div>
       </section>
     </aside>
 
     <main class="panel preview">
-      <div class="hd"><b>Live Preview</b><span class="help">What you see is what you export</span></div>
+      <div class="hd">
+        <b>Live Preview</b><span class="help">Drag to reposition when Adjust mode is on</span>
+      </div>
       <div class="bd canvasWrap">
         <div class="canvasFrame">
+          <!-- Canvas internal resolution remains high; CSS scales it smaller -->
           <canvas id="stage" width="1080" height="1080"></canvas>
         </div>
       </div>

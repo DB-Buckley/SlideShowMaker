@@ -185,63 +185,76 @@ export class Exporter{
     return webm;
   }
 
-  // WebM → MP4 (ffmpeg.wasm) with local-first loader
-  async convertWebMtoMP4(webmBlob, onProgress){
-    const setStatus = (msg)=>{ this.els?.dlArea && (this.els.dlArea.innerHTML = msg); };
+ // -------- WebM → MP4 (ffmpeg.wasm) with robust fallbacks --------
+async convertWebMtoMP4(webmBlob, onProgress){
+  // 1) Load ffmpeg (whatever loader you already have in exporter.js)
+  const setStatus = (msg)=>{ this.els?.dlArea && (this.els.dlArea.innerHTML = msg); };
 
-    let loader;
-    try{
-      loader = await loadFFmpegBundle(setStatus);
-    }catch(e){
-      throw new Error('Failed to load FFmpeg (local/CDN). Place files in public/vendor/ffmpeg/ OR set window.__FFMPEG_BASE. ' + e.message);
-    }
-
-    const { createFFmpeg, base } = loader;
-    // Choose corePath based on the same base that loaded ffmpeg.min.js
-    const corePath = (base || guessLocalBases()[0]) + 'ffmpeg-core.js';
-
-    const ffmpeg = createFFmpeg({
-      log: true,
-      corePath,
-      progress: p => { if (onProgress && p && typeof p.ratio === 'number') onProgress(p); }
-    });
-
-    try{
-      await ffmpeg.load();
-    }catch(e){
-      throw new Error('FFmpeg core failed to load from ' + corePath + '. ' + e.message);
-    }
-
-    const data = new Uint8Array(await webmBlob.arrayBuffer());
-    ffmpeg.FS('writeFile', 'in.webm', data);
-
-    try{
-      await ffmpeg.run(
-        '-i','in.webm',
-        '-c:v','libx264',
-        '-pix_fmt','yuv420p',
-        '-crf','18',
-        '-preset','veryfast',
-        '-movflags','+faststart',
-        'out.mp4'
-      );
-    }catch(e){
-      throw new Error('FFmpeg conversion error: ' + (e?.message || e));
-    }
-
-    const mp4 = ffmpeg.FS('readFile','out.mp4');
-    const mp4Blob = new Blob([mp4.buffer], { type:'video/mp4' });
-
-    try{ ffmpeg.FS('unlink','in.webm'); }catch{}
-    try{ ffmpeg.FS('unlink','out.mp4'); }catch{}
-
-    return mp4Blob;
+  let loader;
+  try{
+    // If your exporter already has "loadFFmpegBundle" + picks corePath, keep using it:
+    loader = await loadFFmpegBundle(setStatus);
+  }catch(e){
+    throw new Error('Failed to load FFmpeg (local/CDN). ' + e.message);
   }
 
-  _fileName(ext){
-    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-    return `slideshow-${stamp}.${ext}`;
+  const { createFFmpeg, base } = loader;
+  // If your exporter already computes corePath elsewhere, reuse it. Otherwise:
+  const chosenBase = base || (typeof window !== 'undefined' && (window.__FFMPEG_BASE_MT || window.__FFMPEG_BASE_ST)) || '/vendor/ffmpeg/';
+  const corePath = chosenBase + 'ffmpeg-core.js';
+
+  const ffmpeg = createFFmpeg({
+    log: true,
+    corePath,
+    progress: p => { if (onProgress && p && typeof p.ratio === 'number') onProgress(p); }
+  });
+
+  try { await ffmpeg.load(); }
+  catch(e) { throw new Error('FFmpeg core failed to load from ' + corePath + '. ' + e.message); }
+
+  // 2) Write input
+  const inName = 'in.webm';
+  const outName = 'out.mp4';
+  const data = new Uint8Array(await webmBlob.arrayBuffer());
+  ffmpeg.FS('writeFile', inName, data);
+
+  // 3) Try multiple recipes (some cores don’t have libx264). We add -y to overwrite.
+  //    Order: libx264 (best), then mpeg4 (widely supported), then a strict baseline.
+  const recipes = [
+    // High quality H.264 (needs libx264 in core)
+    ['-y','-i',inName,'-c:v','libx264','-pix_fmt','yuv420p','-crf','18','-preset','veryfast','-movflags','+faststart',outName],
+    // Fallback: MPEG-4 Part 2 (works everywhere; larger files but compatible)
+    ['-y','-i',inName,'-c:v','mpeg4','-qscale:v','3','-pix_fmt','yuv420p','-movflags','+faststart',outName],
+    // H.264 baseline-ish (if libx264 present but picky)
+    ['-y','-i',inName,'-c:v','libx264','-profile:v','baseline','-level','3.0','-pix_fmt','yuv420p','-crf','20','-preset','veryfast','-movflags','+faststart',outName],
+  ];
+
+  // 4) Try each recipe until one produces out.mp4
+  let lastErr = null;
+  for (const args of recipes){
+    try{
+      await ffmpeg.run(...args);
+      // If run didn't throw, try to read the result
+      const out = ffmpeg.FS('readFile', outName);
+      const blob = new Blob([out.buffer], { type:'video/mp4' });
+      // cleanup
+      try{ ffmpeg.FS('unlink', inName); }catch{}
+      try{ ffmpeg.FS('unlink', outName); }catch{}
+      return blob;
+    }catch(e){
+      lastErr = e;
+      // Ensure any stale output is removed before next attempt
+      try{ ffmpeg.FS('unlink', outName); }catch{}
+    }
   }
+
+  // 5) If we get here, no recipe worked
+  throw new Error(
+    'FFmpeg failed to create out.mp4. Your ffmpeg.wasm build may lack the required encoder. ' +
+    'Try enabling COOP/COEP and the multi-thread core, or add the single-thread core-st and ensure /public/vendor/ffmpeg-st/ is set.'
+  );
+}
+
 
   // Anchor-only download
   async _download(blob, name){

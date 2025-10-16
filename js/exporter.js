@@ -1,5 +1,6 @@
-// exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm with local-first loader)
-// Uses anchor download only (no showSaveFilePicker), so no user-gesture errors.
+// exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm)
+// Robust local-first loader: auto-detects /public/vendor/ffmpeg/ under any base path.
+// Uses anchor download (no user-gesture issues).
 import { waitNextFrame } from './utils.js';
 
 /*** Minimal WebM muxer for VP9 CFR ***/
@@ -77,9 +78,34 @@ class WebMMuxer {
 
 function supportsWebCodecs(){ return 'VideoEncoder' in window && 'VideoFrame' in window; }
 
-// --- Local-first FFmpeg loader (then 2 CDNs)
+/* ---------- Local-first FFmpeg loader with smart base detection ---------- */
+function guessLocalBases(){
+  // 1) Explicit override if you set: <script>window.__FFMPEG_BASE='/myapp/vendor/ffmpeg/'</script>
+  const exp = (typeof window !== 'undefined' && window.__FFMPEG_BASE) ? [window.__FFMPEG_BASE] : [];
+
+  // 2) Relative to current page (works under any subpath): ./vendor/ffmpeg/ and vendor/ffmpeg/
+  const rel = ['./vendor/ffmpeg/', 'vendor/ffmpeg/'];
+
+  // 3) Absolute from site root (works if app is at '/'): /vendor/ffmpeg/
+  const abs = ['/vendor/ffmpeg/'];
+
+  // 4) Relative to the script that imported this module (when available)
+  let scriptRel = [];
+  try{
+    const scripts = Array.from(document.getElementsByTagName('script'));
+    const mod = scripts.find(s=> s.type === 'module' && s.src.includes('/js/main.js')) || scripts[scripts.length-1];
+    if (mod && mod.src){
+      const url = new URL(mod.src, document.baseURI);
+      const basePath = url.pathname.replace(/\/js\/[^/]*$/, '/');
+      scriptRel = [ basePath + 'vendor/ffmpeg/' ];
+    }
+  }catch{}
+
+  return [...exp, ...scriptRel, ...rel, ...abs];
+}
+
 const FFMPEG_BASES = [
-  '/vendor/ffmpeg/', // LOCAL — put files here (see note below)
+  ...guessLocalBases(),
   'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/',
   'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/'
 ];
@@ -97,7 +123,7 @@ async function loadFFmpegBundle(updateDlArea){
         s.onerror = ()=> reject(new Error('Failed to load ' + s.src));
         document.head.appendChild(s);
       });
-      if (!window.FFmpeg?.createFFmpeg) throw new Error('ffmpeg.min.js did not expose FFmpeg API.');
+      if (!window.FFmpeg?.createFFmpeg) throw new Error('ffmpeg.min.js loaded, but API missing.');
       return { createFFmpeg: window.FFmpeg.createFFmpeg, base };
     }catch(e){
       lastErr = e;
@@ -107,13 +133,14 @@ async function loadFFmpegBundle(updateDlArea){
   throw lastErr || new Error('Could not load FFmpeg from any source.');
 }
 
+/* ---------------- Exporter ---------------- */
 export class Exporter{
   constructor(canvas, renderer, state, els){
     this.canvas = canvas; this.renderer = renderer; this.state = state; this.els = els;
     this.lastWebM = null;
   }
 
-  // -------- Deterministic WebM (VP9) export --------
+  // Deterministic WebM (VP9) export
   async exportWebM(){
     if (!supportsWebCodecs()){
       throw new Error('WebCodecs not supported in this browser.');
@@ -158,7 +185,7 @@ export class Exporter{
     return webm;
   }
 
-  // -------- WebM → MP4 (ffmpeg.wasm) with local-first loader --------
+  // WebM → MP4 (ffmpeg.wasm) with local-first loader
   async convertWebMtoMP4(webmBlob, onProgress){
     const setStatus = (msg)=>{ this.els?.dlArea && (this.els.dlArea.innerHTML = msg); };
 
@@ -166,11 +193,12 @@ export class Exporter{
     try{
       loader = await loadFFmpegBundle(setStatus);
     }catch(e){
-      throw new Error('Failed to load FFmpeg (local/CDN). Place files in /vendor/ffmpeg/ or allow the CDN. ' + e.message);
+      throw new Error('Failed to load FFmpeg (local/CDN). Place files in public/vendor/ffmpeg/ OR set window.__FFMPEG_BASE. ' + e.message);
     }
 
     const { createFFmpeg, base } = loader;
-    const corePath = (base || FFMPEG_BASES[0]) + 'ffmpeg-core.js';
+    // Choose corePath based on the same base that loaded ffmpeg.min.js
+    const corePath = (base || guessLocalBases()[0]) + 'ffmpeg-core.js';
 
     const ffmpeg = createFFmpeg({
       log: true,
@@ -215,7 +243,7 @@ export class Exporter{
     return `slideshow-${stamp}.${ext}`;
   }
 
-  // ---- Anchor-only download (no user gesture required) ----
+  // Anchor-only download
   async _download(blob, name){
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);

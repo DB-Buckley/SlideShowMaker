@@ -1,7 +1,7 @@
-// exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm)
+// exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm with local-first loader)
 import { waitNextFrame } from './utils.js';
 
-// --- Minimal WebM muxer for VP9 CFR (unchanged & reliable)
+/*** Minimal WebM muxer for VP9 CFR ***/
 class WebMMuxer {
   constructor({width,height,fps,codec='V_VP9'}={}) {
     this.width=width; this.height=height; this.fps=fps; this.codec=codec;
@@ -76,12 +76,49 @@ class WebMMuxer {
 
 function supportsWebCodecs(){ return 'VideoEncoder' in window && 'VideoFrame' in window; }
 
+// --- Local-first FFmpeg loader (then 2 CDNs)
+const FFMPEG_BASES = [
+  // 1) Local: put files in /vendor/ffmpeg/ (see note below)
+  '/vendor/ffmpeg/',
+  // 2) Unpkg CDN
+  'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/',
+  // 3) jsDelivr CDN
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/'
+];
+
+async function loadFFmpegBundle(updateDlArea){
+  // If already present, skip
+  if (window.FFmpeg?.createFFmpeg) return { createFFmpeg: window.FFmpeg.createFFmpeg, base: null };
+
+  let lastErr;
+  for (const base of FFMPEG_BASES){
+    try{
+      // load ffmpeg.min.js
+      await new Promise((resolve, reject)=>{
+        const s = document.createElement('script');
+        s.src = base + 'ffmpeg.min.js';
+        s.async = true;
+        s.onload = resolve;
+        s.onerror = ()=> reject(new Error('Failed to load ' + s.src));
+        document.head.appendChild(s);
+      });
+      if (!window.FFmpeg?.createFFmpeg) throw new Error('ffmpeg.min.js did not expose FFmpeg API.');
+      return { createFFmpeg: window.FFmpeg.createFFmpeg, base };
+    }catch(e){
+      lastErr = e;
+      if (updateDlArea) updateDlArea(`FFmpeg load failed from ${base} — trying next…`);
+    }
+  }
+  throw lastErr || new Error('Could not load FFmpeg from any source.');
+}
+
 export class Exporter{
   constructor(canvas, renderer, state, els){
     this.canvas = canvas; this.renderer = renderer; this.state = state; this.els = els;
-    this.lastWebM = null; // store last export for manual conversion
+    this.lastWebM = null;
   }
 
+  // -------- Deterministic WebM (VP9) export --------
   async exportWebM(){
     if (!supportsWebCodecs()){
       throw new Error('WebCodecs not supported in this browser.');
@@ -126,57 +163,58 @@ export class Exporter{
     return webm;
   }
 
-  // -------- MP4 conversion via ffmpeg.wasm (runs in browser) --------
+  // -------- WebM → MP4 (ffmpeg.wasm) with local-first loader --------
   async convertWebMtoMP4(webmBlob, onProgress){
-    const { createFFmpeg } = await this._ensureFFmpeg();
+    const setStatus = (msg)=>{
+      if (this.els?.dlArea) this.els.dlArea.innerHTML = msg;
+    };
+
+    let loader;
+    try{
+      loader = await loadFFmpegBundle(setStatus);
+    }catch(e){
+      throw new Error('Failed to load FFmpeg (local/CDN). Place files in /vendor/ffmpeg/ or allow the CDN. ' + e.message);
+    }
+
+    const { createFFmpeg, base } = loader;
+    const corePath = (base || FFMPEG_BASES[0]) + 'ffmpeg-core.js';
+
     const ffmpeg = createFFmpeg({
       log: true,
-      corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js',
-      progress: p => { if (onProgress) onProgress(p); }
+      corePath,
+      progress: p => { if (onProgress && p && typeof p.ratio === 'number') onProgress(p); }
     });
-    await ffmpeg.load();
+
+    try{
+      await ffmpeg.load();
+    }catch(e){
+      throw new Error('FFmpeg core failed to load from ' + corePath + '. ' + e.message);
+    }
 
     const data = new Uint8Array(await webmBlob.arrayBuffer());
     ffmpeg.FS('writeFile', 'in.webm', data);
 
-    // H.264 MP4 with widely compatible pixel format and faststart
-    await ffmpeg.run(
-      '-i','in.webm',
-      '-c:v','libx264',
-      '-pix_fmt','yuv420p',
-      '-crf','18',
-      '-preset','veryfast',
-      '-movflags','+faststart',
-      'out.mp4'
-    );
+    try{
+      await ffmpeg.run(
+        '-i','in.webm',
+        '-c:v','libx264',
+        '-pix_fmt','yuv420p',
+        '-crf','18',
+        '-preset','veryfast',
+        '-movflags','+faststart',
+        'out.mp4'
+      );
+    }catch(e){
+      throw new Error('FFmpeg conversion error: ' + (e?.message || e));
+    }
+
     const mp4 = ffmpeg.FS('readFile','out.mp4');
     const mp4Blob = new Blob([mp4.buffer], { type:'video/mp4' });
 
-    // cleanup
     try{ ffmpeg.FS('unlink','in.webm'); }catch{}
     try{ ffmpeg.FS('unlink','out.mp4'); }catch{}
 
     return mp4Blob;
-  }
-
-  async _ensureFFmpeg(){
-    // Lazy-load browser bundle of @ffmpeg/ffmpeg
-    if (window.FFmpeg && window.FFmpeg.createFFmpeg){
-      return { createFFmpeg: window.FFmpeg.createFFmpeg };
-    }
-    await this._loadScript('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js');
-    if (!window.FFmpeg || !window.FFmpeg.createFFmpeg){
-      throw new Error('Failed to load FFmpeg (wasm).');
-    }
-    return { createFFmpeg: window.FFmpeg.createFFmpeg };
-  }
-
-  _loadScript(src){
-    return new Promise((resolve, reject)=>{
-      const s = document.createElement('script');
-      s.src = src; s.async = true; s.onload = resolve; s.onerror = ()=> reject(new Error('Failed to load '+src));
-      document.head.appendChild(s);
-    });
   }
 
   _fileName(ext){

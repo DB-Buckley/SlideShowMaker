@@ -4,7 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Slideshow Maker — Fast</title>
+
+  <!-- Tiny inline favicon to avoid 404s -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23000'/%3E%3Cpath d='M18 44h28v-4H22c-4 0-6-2-6-6 0-4 3-6 7-6h23v-4H23c-7 0-11 4-11 10s4 10 10 10z' fill='%23fff'/%3E%3C/svg%3E" />
+
   <link rel="stylesheet" href="./css/app.css">
+  <style>
+    /* Make the preview appear smaller while keeping the canvas at full export res */
+    .canvasFrame { width: 420px; height: 420px; }
+    .canvasFrame canvas { width: 100%; height: 100%; display: block; }
+    /* Optional: nicer toast */
+    .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 14px;border-radius:10px;opacity:.0;transition:opacity .2s ease,transform .2s ease;z-index:9999}
+    .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+  </style>
+
+  <!-- Tell exporter where your local FFmpeg files live on Netlify -->
+  <script>
+    window.__FFMPEG_BASE = '/public/vendor/ffmpeg/';
+  </script>
 </head>
 <body>
   <header class="app-header">
@@ -115,12 +132,14 @@
       </div>
       <div class="bd canvasWrap">
         <div class="canvasFrame">
+          <!-- Keep export resolution high; CSS scales it smaller for preview -->
           <canvas id="stage" width="1080" height="1080"></canvas>
         </div>
       </div>
     </main>
   </div>
 
+  <!-- App entry -->
   <script type="module" src="./js/main.js"></script>
 </body>
 </html>

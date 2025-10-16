@@ -1,4 +1,4 @@
-// renderer.js — supports per-slide rotation, user pan, Ken Burns, crossfade
+// renderer.js — per-slide rotation + user pan + Ken Burns + crossfade
 const RES = {
   sq:   { w:1080, h:1080 },
   '169':{ w:1920, h:1080 },
@@ -13,7 +13,7 @@ function easeInOutQuad(t){ t=clamp(t,0,1); return t<0.5? 2*t*t : 1 - Math.pow(-2
 export class Renderer{
   constructor(canvas, state){
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { desynchronized:true });
+    this.ctx = canvas.getContext('2d', { desynchronized:true, willReadFrequently:false });
     this.state = state;
     this.setRes(state.settings.resPreset);
   }
@@ -31,7 +31,6 @@ export class Renderer{
 
     ctx.save();
     ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
-
     if (!n){ ctx.restore(); return; }
 
     const hold = +settings.holdSec;
@@ -40,7 +39,6 @@ export class Renderer{
     const total = loopFlag ? n*segDur : n*hold + Math.max(0,(n-1))*tr;
     const tt = loopFlag ? (t % total) : clamp(t,0,total-1e-6);
 
-    // pick slide
     let idx = 0, accum=0;
     while (true){
       const dur = (idx < n-1 || loopFlag) ? (hold + tr) : hold;
@@ -57,7 +55,54 @@ export class Renderer{
 
     const motionAmt = +settings.motionAmt;
 
-    // current
     if (curr && curr.img.complete){
       const p = clamp(local/hold, 0, 1);
-      this._currentSlide
+      this._currentSlide = curr;
+      this.drawKenBurnsRot(curr.img, p, motionAmt, (curr.rotation||0) * Math.PI/180);
+    }
+
+    if (isXfade && next && next.img.complete){
+      const txf = clamp((local - hold)/tr, 0, 1);
+      ctx.globalAlpha = easeInOutQuad(txf);
+      this._currentSlide = next;
+      this.drawKenBurnsRot(next.img, 0, motionAmt, (next.rotation||0) * Math.PI/180);
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
+  }
+
+  drawKenBurnsRot(img, p, amt, angleRad){
+    const W = this.canvas.width, H = this.canvas.height;
+    const ctx = this.ctx;
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+
+    const cover = Math.max(W/iw, H/ih);
+    const startScale = cover * (1 + amt);
+    const endScale   = cover * (1 - amt*0.5);
+    const s = startScale + (endScale - startScale) * easeInOutQuad(p);
+
+    const dw = iw * s, dh = ih * s;
+
+    const offx0 = (W - dw)/2 + (W - dw) * (p - 0.5) * 0.2;
+    const offy0 = (H - dh)/2 + (H - dh) * (p - 0.5) * -0.2;
+
+    // user pan (-1..1), limited by slack area so faces can be centered
+    const slide = this._currentSlide || {};
+    const pan = slide.pan || {x:0,y:0};
+    const slackX = Math.max(0, dw - W);
+    const slackY = Math.max(0, dh - H);
+    const panX = -(slackX * (pan.x||0)) / 2;
+    const panY = -(slackY * (pan.y||0)) / 2;
+
+    const offx = offx0 + panX;
+    const offy = offy0 + panY;
+
+    ctx.save();
+    ctx.translate(W/2, H/2);
+    ctx.rotate(angleRad);
+    ctx.translate(-W/2, -H/2);
+    ctx.drawImage(img, offx, offy, dw, dh);
+    ctx.restore();
+  }
+}

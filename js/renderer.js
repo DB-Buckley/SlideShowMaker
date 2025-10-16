@@ -1,5 +1,4 @@
-// renderer.js — supports per-slide rotation + Ken Burns + crossfade
-// ---------------------------------------------------------------------------------
+// renderer.js — supports per-slide rotation, user pan, Ken Burns, crossfade
 const RES = {
   sq:   { w:1080, h:1080 },
   '169':{ w:1920, h:1080 },
@@ -14,7 +13,7 @@ function easeInOutQuad(t){ t=clamp(t,0,1); return t<0.5? 2*t*t : 1 - Math.pow(-2
 export class Renderer{
   constructor(canvas, state){
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { desynchronized:true, willReadFrequently:false });
+    this.ctx = canvas.getContext('2d', { desynchronized:true });
     this.state = state;
     this.setRes(state.settings.resPreset);
   }
@@ -41,7 +40,7 @@ export class Renderer{
     const total = loopFlag ? n*segDur : n*hold + Math.max(0,(n-1))*tr;
     const tt = loopFlag ? (t % total) : clamp(t,0,total-1e-6);
 
-    // Figure out current slide and next slide + local times
+    // pick slide
     let idx = 0, accum=0;
     while (true){
       const dur = (idx < n-1 || loopFlag) ? (hold + tr) : hold;
@@ -58,47 +57,7 @@ export class Renderer{
 
     const motionAmt = +settings.motionAmt;
 
-    // draw current
+    // current
     if (curr && curr.img.complete){
-      const p = clamp(local/hold, 0, 1); // 0..1 across hold
-      this.drawKenBurnsRot(curr.img, p, motionAmt, (curr.rotation||0) * Math.PI/180);
-    }
-
-    // crossfade
-    if (isXfade && next && next.img.complete){
-      const txf = clamp((local - hold)/tr, 0, 1);
-      ctx.globalAlpha = easeInOutQuad(txf);
-      this.drawKenBurnsRot(next.img, 0, motionAmt, (next.rotation||0) * Math.PI/180);
-      ctx.globalAlpha = 1;
-    }
-
-    ctx.restore();
-  }
-
-  drawKenBurnsRot(img, p, amt, angleRad){
-    // draw image with Ken Burns into the canvas center, then rotate by angleRad
-    const W = this.canvas.width, H = this.canvas.height;
-    const ctx = this.ctx;
-    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-
-    // Base cover scale (before motion)
-    const cover = Math.max(W/iw, H/ih);
-    const startScale = cover * (1 + amt);
-    const endScale   = cover * (1 - amt*0.5);
-    const s = startScale + (endScale - startScale) * easeInOutQuad(p);
-
-    const dw = iw * s, dh = ih * s;
-    // subtle pan along diagonal
-    const offx = (W - dw)/2 + (W - dw) * (p - 0.5) * 0.2;
-    const offy = (H - dh)/2 + (H - dh) * (p - 0.5) * -0.2;
-
-    ctx.save();
-    // rotate about canvas center
-    ctx.translate(W/2, H/2);
-    ctx.rotate(angleRad);
-    // Translate so our drawImage top-left aligns after rotation (centered)
-    ctx.translate(-W/2, -H/2);
-    ctx.drawImage(img, offx, offy, dw, dh);
-    ctx.restore();
-  }
-}
+      const p = clamp(local/hold, 0, 1);
+      this._currentSlide

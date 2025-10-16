@@ -20,7 +20,7 @@
 .uploader .big{font-size:18px;font-weight:600}
 .thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px;max-height:260px;overflow:auto}
 .thumbs .th{position:relative;border:1px solid #333;border-radius:6px;overflow:hidden;cursor:grab}
-.th img{width:100%;height:90px;object-fit:cover;display:block}
+.th img{width:100%;height:90px;object-fit:cover;display:block;transform-origin:center center}
 .th .rm{position:absolute;top:6px;right:6px;background:#0008;border:none;color:#fff;border-radius:999px;cursor:pointer}
 .canvasWrap{padding:16px}
 .canvasFrame{display:flex;align-items:center;justify-content:center;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:10px;min-height:520px}
@@ -31,3 +31,7 @@
 /* Toasts */
 .toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%) translateY(20px);background:#2b2b2b;border:1px solid #3a3a3a;padding:8px 12px;border-radius:8px;opacity:0;transition:all .25s ease;z-index:9999}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* rotation buttons on thumbs */
+.th .rot{position:absolute;bottom:6px;right:6px;background:#000b;border:1px solid #333;color:#fff;border-radius:6px;cursor:pointer;font-size:12px;padding:4px 6px;margin-left:4px}
+.th .rotL{right:34px}

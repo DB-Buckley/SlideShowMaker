@@ -26,9 +26,7 @@
               <button class="btn" id="pickBtn">Choose images</button>
               <input id="fileInput" type="file" accept="image/*" multiple hidden>
             </div>
-            <div class="help" style="margin-top:10px">
-              Auto-rotates, skips duplicates, drag to reorder.
-            </div>
+            <div class="help" style="margin-top:10px">Auto-rotates, skips duplicates, drag to reorder.</div>
           </div>
           <div class="thumbs" id="thumbs"></div>
         </div>
@@ -42,8 +40,8 @@
               <option value="sq" selected>Square 1080×1080</option>
               <option value="169">16:9 1920×1080</option>
               <option value="916">9:16 1080×1920</option>
-              <option value="54L">5:4 landscape 1350×1080</option>
-              <option value="45P">4:5 portrait 1080×1350</option>
+              <option value="54L">5:4 1350×1080</option>
+              <option value="45P">4:5 1080×1350</option>
             </select>
           </label>
           <label>FPS
@@ -97,8 +95,13 @@
         <div class="hd"><b>Export</b></div>
         <div class="bd">
           <div class="progress"><span id="progBar"></span></div>
-          <div class="bar">
-            <button id="exportBtn" class="btn">Export</button>
+          <div class="bar" style="flex-wrap:wrap;gap:10px 16px">
+            <button id="exportBtn" class="btn">Export (WebM)</button>
+            <label class="bar" style="gap:8px">
+              <input id="autoMp4" type="checkbox">
+              <span>Auto-convert to MP4 (slower)</span>
+            </label>
+            <button id="convertBtn" class="btn ghost" disabled>Convert last WebM → MP4</button>
           </div>
           <div id="dlArea" class="help" style="margin-top:8px"></div>
         </div>
@@ -107,11 +110,11 @@
 
     <main class="panel preview">
       <div class="hd">
-        <b>Live Preview</b><span class="help">Drag to reposition when Adjust mode is on</span>
+        <b>Live Preview</b>
+        <span class="help">Drag to reposition when “Adjust position” is enabled</span>
       </div>
       <div class="bd canvasWrap">
         <div class="canvasFrame">
-          <!-- Canvas internal resolution remains high; CSS scales it smaller -->
           <canvas id="stage" width="1080" height="1080"></canvas>
         </div>
       </div>

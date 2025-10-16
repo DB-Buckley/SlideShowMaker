@@ -246,16 +246,32 @@ export async function bootstrap(){
   els.seek.addEventListener('input', ()=>{ if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev)); els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0); });
 
   // --- Export
-  els.exportBtn.onclick = async ()=>{
-    els.progBar.style.width = '0%';
-    try{
-      const blob = await exporter.export();
-      els.progBar.style.width = '100%';
-      if (blob) els.dlArea.innerHTML = 'Export complete.';
-    }catch(e){
-      // message is handled inside exporter (shows WebM fallback button)
-    }
-  };
+els.exportBtn.onclick = async ()=>{
+  els.progBar.style.width = '0%';
+  // disable interactions during export
+  const prevDisabled = els.exportBtn.disabled;
+  els.exportBtn.disabled = true;
+  els.playBtn.disabled = true;
+  els.pauseBtn.disabled = true;
+  els.stopBtn.disabled = true;
+  els.adjustBtn.disabled = true;
+
+  try{
+    await exporter.export(); // deterministic paths inside exporter
+    els.progBar.style.width = '100%';
+    els.dlArea.innerHTML = 'Export complete.';
+  }catch(e){
+    console.error(e);
+    els.dlArea.innerHTML = '<b>Export failed:</b> ' + (e?.message || e);
+  }finally{
+    els.exportBtn.disabled = prevDisabled;
+    els.playBtn.disabled = false;
+    els.pauseBtn.disabled = false;
+    els.stopBtn.disabled = false;
+    els.adjustBtn.disabled = false;
+  }
+};
+
 
   // initial
   sync();

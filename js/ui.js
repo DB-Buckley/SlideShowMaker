@@ -35,7 +35,74 @@ export async function bootstrap(){
     exportBtn: document.getElementById('exportBtn'),
     progBar: document.getElementById('progBar'),
     dlArea: document.getElementById('dlArea'),
+    // These may not exist yet; we create/rebind below:
+    autoMp4: document.getElementById('autoMp4'),
+    convertBtn: document.getElementById('convertBtn'),
   };
+
+  // Ensure Export controls exist even if HTML doesn't include them
+  function ensureExportControls(){
+    const prog = document.getElementById('progBar');
+    if (!prog) return;
+    const exportBd = prog.closest('.bd') || prog.parentElement;
+
+    // Find/create the export bar (the row with the export button)
+    let exportBar = exportBd.querySelector('.bar');
+    if (!exportBar){
+      exportBar = document.createElement('div');
+      exportBar.className = 'bar';
+      exportBd.appendChild(exportBar);
+    }
+
+    // Export button
+    if (!document.getElementById('exportBtn')){
+      const exportBtn = document.createElement('button');
+      exportBtn.id = 'exportBtn';
+      exportBtn.className = 'btn';
+      exportBtn.textContent = 'Export (WebM)';
+      exportBar.appendChild(exportBtn);
+    }
+
+    // Auto-convert checkbox
+    if (!document.getElementById('autoMp4')){
+      const wrap = document.createElement('label');
+      wrap.className = 'bar';
+      wrap.style.gap = '8px';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = 'autoMp4';
+      const span = document.createElement('span');
+      span.textContent = 'Auto-convert to MP4 (slower)';
+      wrap.appendChild(cb); wrap.appendChild(span);
+      exportBar.appendChild(wrap);
+    }
+
+    // Convert button
+    if (!document.getElementById('convertBtn')){
+      const convertBtn = document.createElement('button');
+      convertBtn.id = 'convertBtn';
+      convertBtn.className = 'btn ghost';
+      convertBtn.textContent = 'Convert last WebM → MP4';
+      convertBtn.disabled = true;
+      exportBar.appendChild(convertBtn);
+    }
+
+    // Download/status area
+    if (!document.getElementById('dlArea')){
+      const dl = document.createElement('div');
+      dl.id = 'dlArea';
+      dl.className = 'help';
+      dl.style.marginTop = '8px';
+      exportBd.appendChild(dl);
+    }
+  }
+  ensureExportControls();
+
+  // Rebind any newly created elements
+  els.exportBtn = document.getElementById('exportBtn');
+  els.autoMp4 = document.getElementById('autoMp4');
+  els.convertBtn = document.getElementById('convertBtn');
+  els.dlArea = document.getElementById('dlArea');
 
   const state = createState();
   const renderer = new Renderer(els.canvas, state);
@@ -56,11 +123,11 @@ export async function bootstrap(){
   }
 
   // --- Uploader
-  els.pickBtn.onclick = ()=> els.fileInput.click();
-  els.fileInput.onchange = ()=> addFiles(els.fileInput.files);
-  ['dragover','dragenter'].forEach(ev=> els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3b82f6'; }));
-  ['dragleave','drop'].forEach(ev=> els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3a3a3a'; }));
-  els.drop.addEventListener('drop', e=> addFiles(e.dataTransfer.files));
+  if (els.pickBtn) els.pickBtn.onclick = ()=> els.fileInput && els.fileInput.click();
+  if (els.fileInput) els.fileInput.onchange = ()=> addFiles(els.fileInput.files);
+  ['dragover','dragenter'].forEach(ev=> els.drop && els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3b82f6'; }));
+  ['dragleave','drop'].forEach(ev=> els.drop && els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3a3a3a'; }));
+  els.drop && els.drop.addEventListener('drop', e=> addFiles(e.dataTransfer.files));
 
   async function addFiles(files){
     const list = Array.from(files||[]).filter(f=> f.type && f.type.startsWith('image/'));
@@ -111,7 +178,7 @@ export async function bootstrap(){
   }
 
   function renderThumbs(){
-    const wrap = els.thumbs; wrap.innerHTML = '';
+    const wrap = els.thumbs; if (!wrap) return; wrap.innerHTML = '';
     state.slides.forEach((s, i)=>{
       const div = document.createElement('div'); div.className='th'; div.draggable=true;
       const im = document.createElement('img'); im.src = s.url; div.appendChild(im);
@@ -142,60 +209,61 @@ export async function bootstrap(){
 
   // --- Controls
   const sync = ()=>{
-    state.settings.resPreset = els.resPreset.value;
-    state.settings.fps = +els.fps.value;
-    state.settings.holdSec = +els.holdSec.value;
-    state.settings.transitionSec = +els.transitionSec.value;
-    state.settings.motionAmt = +els.motionAmt.value;
-    state.settings.loopPrev = +els.loopPrev.value;
-    state.settings.bitrate = Math.round(+els.bitrate.value*1_000_000);
+    state.settings.resPreset = els.resPreset?.value || 'sq';
+    state.settings.fps = +(els.fps?.value || 30);
+    state.settings.holdSec = +(els.holdSec?.value || 2.5);
+    state.settings.transitionSec = +(els.transitionSec?.value || 0.6);
+    state.settings.motionAmt = +(els.motionAmt?.value || 0.12);
+    state.settings.loopPrev = +(els.loopPrev?.value || 1);
+    state.settings.bitrate = Math.round(+((els.bitrate?.value)||8)*1_000_000);
     renderer.setRes(state.settings.resPreset);
     updateTotal();
   };
   ['change','input'].forEach(ev=>{
     [els.resPreset, els.fps, els.holdSec, els.transitionSec, els.motionAmt, els.loopPrev, els.bitrate]
+      .filter(Boolean)
       .forEach(el=> el.addEventListener(ev, sync));
   });
   const valSync = ()=>{
-    els.valHold.textContent = state.settings.holdSec.toFixed(1)+'s';
-    els.valTrans.textContent = state.settings.transitionSec.toFixed(2)+'s';
-    els.valMotionAmt.textContent = state.settings.motionAmt.toFixed(2)+'×';
-    els.valBitrate.textContent = (state.settings.bitrate/1_000_000).toFixed(1)+' Mbps';
+    if (els.valHold) els.valHold.textContent = state.settings.holdSec.toFixed(1)+'s';
+    if (els.valTrans) els.valTrans.textContent = state.settings.transitionSec.toFixed(2)+'s';
+    if (els.valMotionAmt) els.valMotionAmt.textContent = state.settings.motionAmt.toFixed(2)+'×';
+    if (els.valBitrate) els.valBitrate.textContent = (state.settings.bitrate/1_000_000).toFixed(1)+' Mbps';
   };
 
   function updateTotal(){
     const total = state.totalDuration(Boolean(state.settings.loopPrev));
-    els.totalTime.textContent = fmtTime(total);
-    els.seek.max = String(Math.max(0,total));
+    if (els.totalTime) els.totalTime.textContent = fmtTime(total);
+    if (els.seek) els.seek.max = String(Math.max(0,total));
     valSync();
     renderer.setRes(state.settings.resPreset);
-    if (state.pageCount()) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev));
+    if (state.pageCount()) renderer.drawAt(parseFloat(els.seek?.value)||0, Boolean(state.settings.loopPrev));
   }
 
   // --- Adjust (drag to reposition)
   let adjusting = false;
-  els.adjustBtn.onclick = ()=>{
+  if (els.adjustBtn) els.adjustBtn.onclick = ()=>{
     adjusting = !adjusting;
     els.adjustBtn.classList.toggle('primary', adjusting);
     const frame = document.querySelector('.canvasFrame');
     const cnv = els.canvas;
-    frame.classList.toggle('adjusting', adjusting);
-    cnv.classList.toggle('adjusting', adjusting);
+    frame && frame.classList.toggle('adjusting', adjusting);
+    cnv && cnv.classList.toggle('adjusting', adjusting);
   };
 
   // Drag handling on canvas
   let drag = null;
-  els.canvas.addEventListener('mousedown', (e)=>{
+  els.canvas && els.canvas.addEventListener('mousedown', (e)=>{
     if (!adjusting) return;
     e.preventDefault();
     drag = { x:e.offsetX, y:e.offsetY };
   });
   window.addEventListener('mouseup', ()=>{ drag=null; });
-  els.canvas.addEventListener('mousemove', (e)=>{
+  els.canvas && els.canvas.addEventListener('mousemove', (e)=>{
     if (!adjusting || !drag) return;
     const hold = state.settings.holdSec, tr = state.settings.transitionSec, seg = hold+tr;
     // best-effort index from current time in preview
-    const t = parseFloat(els.seek.value)||0;
+    const t = parseFloat(els.seek?.value)||0;
     let idx = 0;
     if (state.slides.length){
       idx = Math.min(state.slides.length-1, Math.floor(t / seg));
@@ -235,71 +303,70 @@ export async function bootstrap(){
     if (!playing) return;
     const t = (performance.now()-start)/1000 + baseT;
     renderer.drawAt(t, Boolean(state.settings.loopPrev));
-    els.currTime.textContent = fmtTime(t);
-    els.seek.value = String(t);
+    if (els.currTime) els.currTime.textContent = fmtTime(t);
+    if (els.seek) els.seek.value = String(t);
     requestAnimationFrame(tick);
   }
 
-  els.playBtn.onclick = ()=>{ if (playing) return; playing = true; start = performance.now(); baseT = parseFloat(els.seek.value)||0; tick(); };
-  els.pauseBtn.onclick = ()=>{ if (!playing) return; playing = false; const t = (performance.now()-start)/1000 + baseT; els.seek.value = String(t); els.currTime.textContent = fmtTime(t); };
-  els.stopBtn.onclick = ()=>{ playing = false; els.seek.value = '0'; renderer.drawAt(0, Boolean(state.settings.loopPrev)); els.currTime.textContent = '00:00'; };
-  els.seek.addEventListener('input', ()=>{ if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev)); els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0); });
+  if (els.playBtn) els.playBtn.onclick = ()=>{ if (playing) return; playing = true; start = performance.now(); baseT = parseFloat(els.seek?.value)||0; tick(); };
+  if (els.pauseBtn) els.pauseBtn.onclick = ()=>{ if (!playing) return; playing = false; const t = (performance.now()-start)/1000 + baseT; if (els.seek) els.seek.value = String(t); if (els.currTime) els.currTime.textContent = fmtTime(t); };
+  if (els.stopBtn) els.stopBtn.onclick = ()=>{ playing = false; if (els.seek) els.seek.value = '0'; renderer.drawAt(0, Boolean(state.settings.loopPrev)); if (els.currTime) els.currTime.textContent = '00:00'; };
+  els.seek && els.seek.addEventListener('input', ()=>{ if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev)); if (els.currTime) els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0); });
 
-   // --- Export
+  // --- Export
   let lastWebM = null;
 
-  els.convertBtn.onclick = async ()=>{
+  if (els.convertBtn) els.convertBtn.onclick = async ()=>{
     if (!lastWebM){
-      els.dlArea.innerHTML = 'Convert: export a WebM first.';
+      if (els.dlArea) els.dlArea.innerHTML = 'Convert: export a WebM first.';
       return;
     }
     els.convertBtn.disabled = true;
-    els.dlArea.innerHTML = 'Converting to MP4… (first run downloads ffmpeg.wasm; may take a moment)';
+    if (els.dlArea) els.dlArea.innerHTML = 'Converting to MP4… (first run downloads ffmpeg.wasm; may take a moment)';
     try{
       const mp4 = await exporter.convertWebMtoMP4(lastWebM, p=>{
-        if (p && typeof p.ratio === 'number'){
+        if (p && typeof p.ratio === 'number' && els.progBar){
           els.progBar.style.width = Math.min(100, Math.round(p.ratio*100)) + '%';
         }
       });
-      els.progBar.style.width = '100%';
+      if (els.progBar) els.progBar.style.width = '100%';
       await exporter._download(mp4, 'slideshow-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.mp4');
-      els.dlArea.innerHTML = 'MP4 saved.';
+      if (els.dlArea) els.dlArea.innerHTML = 'MP4 saved.';
     }catch(e){
       console.error(e);
-      els.dlArea.innerHTML = '<b>MP4 conversion failed:</b> ' + (e?.message || e);
+      if (els.dlArea) els.dlArea.innerHTML = '<b>MP4 conversion failed:</b> ' + (e?.message || e);
     }finally{
       els.convertBtn.disabled = false;
     }
   };
 
-  els.exportBtn.onclick = async ()=>{
-    els.progBar.style.width = '0%';
-    // disable interactions during export
-    const toDisable = [els.exportBtn, els.playBtn, els.pauseBtn, els.stopBtn, els.adjustBtn, els.convertBtn];
+  if (els.exportBtn) els.exportBtn.onclick = async ()=>{
+    if (els.progBar) els.progBar.style.width = '0%';
+    const toDisable = [els.exportBtn, els.playBtn, els.pauseBtn, els.stopBtn, els.adjustBtn, els.convertBtn].filter(Boolean);
     toDisable.forEach(b=> b.disabled = true);
 
     try{
       const webm = await exporter.exportWebM();
       lastWebM = webm;
-      els.dlArea.innerHTML = 'WebM export complete.';
-      els.convertBtn.disabled = false;
+      if (els.dlArea) els.dlArea.innerHTML = 'WebM export complete.';
+      if (els.convertBtn) els.convertBtn.disabled = false;
 
-      if (els.autoMp4.checked){
-        els.dlArea.innerHTML = 'WebM saved. Converting to MP4… (first run downloads ffmpeg.wasm)';
+      if (els.autoMp4 && els.autoMp4.checked){
+        if (els.dlArea) els.dlArea.innerHTML = 'WebM saved. Converting to MP4… (first run downloads ffmpeg.wasm)';
         const mp4 = await exporter.convertWebMtoMP4(webm, p=>{
-          if (p && typeof p.ratio === 'number'){
+          if (p && typeof p.ratio === 'number' && els.progBar){
             els.progBar.style.width = Math.min(100, Math.round(p.ratio*100)) + '%';
           }
         });
-        els.progBar.style.width = '100%';
+        if (els.progBar) els.progBar.style.width = '100%';
         await exporter._download(mp4, 'slideshow-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.mp4');
-        els.dlArea.innerHTML = 'WebM + MP4 saved.';
+        if (els.dlArea) els.dlArea.innerHTML = 'WebM + MP4 saved.';
       }else{
-        els.dlArea.innerHTML += ' You can convert to MP4 anytime.';
+        if (els.dlArea) els.dlArea.innerHTML += ' You can convert to MP4 anytime.';
       }
     }catch(e){
       console.error(e);
-      els.dlArea.innerHTML = '<b>Export failed:</b> ' + (e?.message || e);
+      if (els.dlArea) els.dlArea.innerHTML = '<b>Export failed:</b> ' + (e?.message || e);
     }finally{
       toDisable.forEach(b=> b.disabled = false);
     }

@@ -1,19 +1,19 @@
-// exif.js — minimal EXIF orientation reader (JPEG only).
-// Returns 1..8 or 1 if not found.
+// exif.js — minimal EXIF orientation reader (JPEG only). Returns 1..8 or 1 if not found.
 export async function readExifOrientation(fileOrBuffer){
   let buf;
   if (fileOrBuffer instanceof ArrayBuffer) buf = fileOrBuffer;
   else buf = await fileOrBuffer.arrayBuffer();
+
   const dv = new DataView(buf);
   if (dv.getUint16(0) !== 0xFFD8) return 1; // not JPEG
   let offset = 2;
   const length = dv.byteLength;
   while (offset < length){
     const marker = dv.getUint16(offset); offset += 2;
-    if (marker === 0xFFE1){
+    if (marker === 0xFFE1){ // APP1
       const size = dv.getUint16(offset); offset += 2;
       if (dv.getUint32(offset) === 0x45786966){ // "Exif"
-        offset += 6;
+        offset += 6; // skip "Exif\0\0"
         const tiffOff = offset;
         const endian = dv.getUint16(tiffOff);
         const little = endian === 0x4949;
@@ -24,7 +24,7 @@ export async function readExifOrientation(fileOrBuffer){
         for (let i=0;i<entries;i++){
           const entry = ifd0 + 2 + i*12;
           const tag = getU16(entry);
-          if (tag === 0x0112){
+          if (tag === 0x0112){ // Orientation
             const val = getU16(entry + 8);
             return val || 1;
           }
@@ -39,6 +39,7 @@ export async function readExifOrientation(fileOrBuffer){
   return 1;
 }
 
+// draw with orientation into a target rect
 export function drawWithOrientation(ctx, img, orientation, dstW, dstH){
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;

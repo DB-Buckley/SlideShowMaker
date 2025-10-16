@@ -1,4 +1,5 @@
 // exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm with local-first loader)
+// Uses anchor download only (no showSaveFilePicker), so no user-gesture errors.
 import { waitNextFrame } from './utils.js';
 
 /*** Minimal WebM muxer for VP9 CFR ***/
@@ -78,22 +79,16 @@ function supportsWebCodecs(){ return 'VideoEncoder' in window && 'VideoFrame' in
 
 // --- Local-first FFmpeg loader (then 2 CDNs)
 const FFMPEG_BASES = [
-  // 1) Local: put files in /vendor/ffmpeg/ (see note below)
-  '/vendor/ffmpeg/',
-  // 2) Unpkg CDN
+  '/vendor/ffmpeg/', // LOCAL — put files here (see note below)
   'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/',
-  // 3) jsDelivr CDN
   'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/'
 ];
 
 async function loadFFmpegBundle(updateDlArea){
-  // If already present, skip
   if (window.FFmpeg?.createFFmpeg) return { createFFmpeg: window.FFmpeg.createFFmpeg, base: null };
-
   let lastErr;
   for (const base of FFMPEG_BASES){
     try{
-      // load ffmpeg.min.js
       await new Promise((resolve, reject)=>{
         const s = document.createElement('script');
         s.src = base + 'ffmpeg.min.js';
@@ -106,7 +101,7 @@ async function loadFFmpegBundle(updateDlArea){
       return { createFFmpeg: window.FFmpeg.createFFmpeg, base };
     }catch(e){
       lastErr = e;
-      if (updateDlArea) updateDlArea(`FFmpeg load failed from ${base} — trying next…`);
+      updateDlArea?.(`FFmpeg load failed from ${base} — trying next…`);
     }
   }
   throw lastErr || new Error('Could not load FFmpeg from any source.');
@@ -165,9 +160,7 @@ export class Exporter{
 
   // -------- WebM → MP4 (ffmpeg.wasm) with local-first loader --------
   async convertWebMtoMP4(webmBlob, onProgress){
-    const setStatus = (msg)=>{
-      if (this.els?.dlArea) this.els.dlArea.innerHTML = msg;
-    };
+    const setStatus = (msg)=>{ this.els?.dlArea && (this.els.dlArea.innerHTML = msg); };
 
     let loader;
     try{
@@ -222,23 +215,12 @@ export class Exporter{
     return `slideshow-${stamp}.${ext}`;
   }
 
+  // ---- Anchor-only download (no user gesture required) ----
   async _download(blob, name){
-    try{
-      if ('showSaveFilePicker' in window){
-        const handle = await window.showSaveFilePicker({
-          suggestedName: name,
-          types: [{ description: 'Video', accept: { [blob.type || 'video/webm']: [`.${name.split('.').pop()}`] } }]
-        });
-        const w = await handle.createWritable();
-        await w.write(blob); await w.close();
-        if (this.els?.dlArea) this.els.dlArea.innerHTML = `Saved: <b>${name}</b>`;
-        return;
-      }
-    }catch(e){ console.warn('showSaveFilePicker failed:', e); }
-
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     setTimeout(()=> {

@@ -17,11 +17,6 @@
     .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 14px;border-radius:10px;opacity:.0;transition:opacity .2s ease,transform .2s ease;z-index:9999}
     .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
   </style>
-
-  <!-- Tell exporter where your local FFmpeg files live on Netlify -->
-  <script>
-    window.__FFMPEG_BASE = '/public/vendor/ffmpeg/';
-  </script>
 </head>
 <body>
   <header class="app-header">
@@ -114,11 +109,6 @@
           <div class="progress"><span id="progBar"></span></div>
           <div class="bar" style="flex-wrap:wrap;gap:10px 16px">
             <button id="exportBtn" class="btn">Export (WebM)</button>
-            <label class="bar" style="gap:8px">
-              <input id="autoMp4" type="checkbox">
-              <span>Auto-convert to MP4 (slower)</span>
-            </label>
-            <button id="convertBtn" class="btn ghost" disabled>Convert last WebM → MP4</button>
           </div>
           <div id="dlArea" class="help" style="margin-top:8px"></div>
         </div>

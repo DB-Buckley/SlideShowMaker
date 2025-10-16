@@ -1,8 +1,8 @@
 // exporter.js — Reliable WebM export via MediaRecorder + canvas.captureStream
-// - Prefer VP8 for maximum stability, fall back to VP9/generic webm.
-// - Timesliced recording + requestData() to force regular flushing.
-// - rAF-driven fixed-FPS renderer (robust against setTimeout jitter).
-// - Watchdog that fails fast if the recorder doesn't flush.
+// - Prefer VP8 (widest hardware decode) with VP9/generic fallback.
+// - Time-sliced recording + periodic requestData() to force chunk flushes.
+// - rAF-driven fixed-FPS render loop resilient to timer jitter and tab throttling.
+// - Watchdog to surface recorder stalls instead of hanging forever.
 
 import { waitNextFrame } from './utils.js';
 
@@ -30,7 +30,7 @@ export class Exporter {
     const totalSec = this.state.totalDuration(false);
     if (!(totalSec > 0)) throw new Error('No duration to export. Add photos first.');
 
-    // Prefer VP8 → most reliable across Chrome/Firefox; then VP9; then generic.
+    // Prefer VP8 (most reliable), then VP9, then generic webm.
     const mimeCandidates = [
       'video/webm;codecs=vp8',
       'video/webm;codecs=vp9',
@@ -42,7 +42,7 @@ export class Exporter {
     }
     if (!mimeType) throw new Error('No supported WebM mime type found for MediaRecorder.');
 
-    // Capture the canvas stream at target fps
+    // Canvas stream at target fps
     const stream = this.canvas.captureStream(fps);
     const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: bitrate });
 
@@ -60,41 +60,44 @@ export class Exporter {
     const prog = this.els?.progBar;
     const updateProg = (i) => { if (prog) prog.style.width = ((i / totalFrames) * 100).toFixed(1) + '%'; };
 
-    // Promises controlling start/stop
+    // Start/stop promises
     const started = new Promise((resolve) => { recorder.onstart = resolve; });
     const stopped = new Promise((resolve, reject) => {
       recorder.onerror = (e) => reject(e?.error || e);
       recorder.onstop  = () => resolve(new Blob(chunks, { type: mimeType }));
     });
 
-    // Timeslice & forced flush
-    const TIME_SLICE_MS = 1000;             // chunk every second
-    const FLUSH_EVERY_MS = 1000;            // requestData every second too (belt-and-braces)
+    // Force regular flushing
+    const TIME_SLICE_MS = 1000;  // recorder emits a chunk every 1s
+    const FLUSH_MS = 1000;       // also force a flush each second
     let flushTimer = null;
 
-    recorder.start(TIME_SLICE_MS);          // important: time-sliced recording
+    recorder.start(TIME_SLICE_MS);
     await started;
 
     flushTimer = setInterval(() => {
       try { if (recorder.state === 'recording') recorder.requestData(); } catch {}
-    }, FLUSH_EVERY_MS);
+    }, FLUSH_MS);
 
-    // rAF-driven fixed-fps render loop for reliability
+    // rAF-driven fixed-FPS render loop (resists setTimeout jitter)
     const frameInterval = 1000 / fps;
     const tStart = performance.now();
     let nextFrameTime = tStart;
     let frameIndex = 0;
 
     const loop = async () => {
-      // Draw frames until we reach totalFrames
       while (frameIndex < totalFrames) {
         const now = performance.now();
         if (now >= nextFrameTime) {
-          const t = frameIndex / fps;             // timeline seconds
+          const t = frameIndex / fps;     // timeline seconds
           this.renderer.drawAt(t, false);
           frameIndex++;
           if ((frameIndex & 7) === 0) updateProg(frameIndex);
           nextFrameTime += frameInterval;
+
+          // If the tab was heavily throttled, catch up by skipping intermediate waits.
+          // (Keeps output duration correct; a few frames may compress, which is fine for slideshows.)
+          while (now - nextFrameTime > frameInterval) nextFrameTime += frameInterval;
         } else {
           await new Promise(r => requestAnimationFrame(r));
         }
@@ -103,15 +106,14 @@ export class Exporter {
 
     await loop();
 
-    // Ensure exact last frame + a tiny tail to flush encoder
+    // Ensure last frame and a small tail so encoder finalizes a clean segment
     this.renderer.drawAt(totalSec, false);
     await new Promise(r => setTimeout(r, Math.max(10, frameInterval / 2)));
 
-    // Stop recording and wait for final blob
     recorder.stop();
 
-    // Watchdog: fail fast if data never arrives
-    const WATCHDOG_MS = Math.max(5000, Math.ceil(totalSec * 1500)); // generous: 1.5× duration, min 5s
+    // Watchdog: if finalize stalls, surface an error (don’t hang)
+    const WATCHDOG_MS = Math.max(5000, Math.ceil(totalSec * 1500)); // 1.5× duration (min 5s)
     const watchdog = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Recorder did not finalize the WebM in time.')), WATCHDOG_MS)
     );

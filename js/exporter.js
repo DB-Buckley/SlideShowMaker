@@ -1,20 +1,7 @@
-// exporter.js — Deterministic export. No rAF; we step frames exactly at t=i/fps.
-// Path A (preferred MP4): MediaStreamTrackGenerator + MediaRecorder('video/mp4')
-// Path B (always reliable): WebCodecs → VP9 + tiny WebM muxer (offline, fast)
+// exporter.js — Deterministic WebCodecs export (VP9 → WebM).
+// No MediaRecorder. No realtime. Frame-accurate and glitch-free across browsers.
 
 import { waitNextFrame } from './utils.js';
-
-function supportsMp4Recorder() {
-  return typeof MediaRecorder !== 'undefined' &&
-         MediaRecorder.isTypeSupported &&
-         MediaRecorder.isTypeSupported('video/mp4;codecs=avc1.42E01E');
-}
-function supportsTrackGenerator() {
-  return 'MediaStreamTrackGenerator' in window && 'VideoFrame' in window;
-}
-function supportsWebCodecsVP9() {
-  return 'VideoEncoder' in window && 'VideoFrame' in window;
-}
 
 /*** Minimal WebM muxer for VP9 CFR ***/
 class WebMMuxer {
@@ -29,7 +16,7 @@ class WebMMuxer {
   _u16(v){ const b=new Uint8Array(2); new DataView(b.buffer).setUint16(0,v); return b; }
   _u32(v){ const b=new Uint8Array(4); new DataView(b.buffer).setUint32(0,v); return b; }
   _vint(n){ const b=new Uint8Array(8); for(let i=7;i>=0;i--){ b[i]=n&0xff; n>>>=8; } b[0]|=0x01; return b; }
-  _chunk(id,data){ return new Blob([new Uint8Array(id), this._vint(data.size ?? data.length), data]); }
+  _chunk(id,data){ const bytes = data instanceof Blob ? data : new Uint8Array(data); return new Blob([new Uint8Array(id), this._vint(bytes.size ?? bytes.length), bytes]); }
   _writeHeader(){
     const EBML = this._chunk([0x1A,0x45,0xDF,0xA3], new Uint8Array([
       0x42,0x86,0x81,0x01, 0x42,0xF7,0x81,0x01, 0x42,0xF2,0x81,0x04,
@@ -67,7 +54,8 @@ class WebMMuxer {
   _startCluster(){
     this.clusterTimecode = Math.round(this.frameCount * (1000/this.fps));
     const header = new Blob([
-      new Uint8Array([0x1F,0x43,0xB6,0x75]), new Uint8Array([0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF]),
+      new Uint8Array([0x1F,0x43,0xB6,0x75]),
+      new Uint8Array([0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF]),
       new Uint8Array([0xE7,0x81]), new Uint8Array([this.clusterTimecode & 0xFF])
     ]);
     this.cluster = [header];
@@ -85,13 +73,13 @@ class WebMMuxer {
     ]);
     this.cluster.push(block);
     this.frameCount++;
-    if (tc >= 5000){ // new cluster every ~5s
-      this._flushCluster();
-    }
+    if (tc >= 5000){ this._flushCluster(); } // new cluster every ~5s
   }
   _flushCluster(){ if (this.cluster.length){ this.segment.push(...this.cluster); this.cluster=[]; } }
   finalize(){ this._flushCluster(); return new Blob(this.segment, { type:'video/webm' }); }
 }
+
+function supportsWebCodecs(){ return 'VideoEncoder' in window && 'VideoFrame' in window; }
 
 export class Exporter{
   constructor(canvas, renderer, state, els){
@@ -99,58 +87,12 @@ export class Exporter{
   }
 
   async export(){
-    // Try deterministic MP4 first (only if both MP4 recorder + track generator exist)
-    if (supportsMp4Recorder() && supportsTrackGenerator()){
-      return await this._exportMp4Deterministic();
+    if (!supportsWebCodecs()){
+      throw new Error('WebCodecs not supported in this browser.');
     }
-    // Otherwise use WebCodecs → WebM (deterministic, reliable everywhere WebCodecs exists)
-    if (supportsWebCodecsVP9()){
-      return await this._exportWebMDeterministic();
-    }
-    // Last resort: tell user clearly (should be rare in 2025)
-    throw new Error('No deterministic export path available in this browser.');
+    return await this._exportWebMDeterministic();
   }
 
-  /*** Path A: Deterministic MP4 via TrackGenerator + MediaRecorder ***/
-  async _exportMp4Deterministic(){
-    const fps = +this.state.settings.fps;
-    const bitrate = Math.round(+this.state.settings.bitrate);
-    const w = this.canvas.width, h = this.canvas.height;
-
-    const gen = new MediaStreamTrackGenerator({ kind: 'video' });
-    const writer = gen.writable.getWriter();
-    const stream = new MediaStream([gen]);
-    const rec = new MediaRecorder(stream, { mimeType:'video/mp4;codecs=avc1.42E01E', videoBitsPerSecond: bitrate });
-    const chunks = [];
-    rec.ondataavailable = e=> { if (e.data && e.data.size) chunks.push(e.data); };
-
-    const totalSec = this.state.totalDuration(false);
-    const totalFrames = Math.ceil(totalSec * fps);
-    const prog = this.els?.progBar;
-    const updateProg = (i)=> prog && (prog.style.width = ((i/totalFrames)*100).toFixed(1)+'%');
-
-    rec.start(1000); // collect chunks periodically
-
-    for (let i=0;i<totalFrames;i++){
-      const t = i / fps;
-      this.renderer.drawAt(t, false);
-      // IMPORTANT: create VideoFrame with exact timestamp (microseconds)
-      const frame = new VideoFrame(this.canvas, { timestamp: Math.round(1e6 * (i / fps)) });
-      await writer.write(frame);
-      frame.close();
-      if ((i & 31) === 0) await waitNextFrame(); // yield to keep UI responsive
-      if ((i & 15) === 0) updateProg(i);
-    }
-    await writer.close();
-
-    await new Promise(res=> { rec.onstop = res; rec.stop(); });
-    const blob = new Blob(chunks, { type:'video/mp4' });
-    await this._download(blob, this._fileName('mp4'));
-    updateProg(totalFrames);
-    return blob;
-  }
-
-  /*** Path B: Deterministic WebM (VP9) via WebCodecs ***/
   async _exportWebMDeterministic(){
     const fps = +this.state.settings.fps;
     const bitrate = Math.round(+this.state.settings.bitrate);
@@ -169,17 +111,17 @@ export class Exporter{
     const updateProg = (i)=> prog && (prog.style.width = ((i/totalFrames)*100).toFixed(1)+'%');
 
     for (let i=0;i<totalFrames;i++){
-      const t = i / fps;
-      this.renderer.drawAt(t, false);
-      const vf = new VideoFrame(this.canvas, { timestamp: Math.round(1e6 * (i / fps)) });
+      const t = i / fps;                   // exact timestamp
+      this.renderer.drawAt(t, false);      // deterministic render
+      const vf = new VideoFrame(this.canvas, { timestamp: Math.round(1e6 * t) });
       encoder.encode(vf, { keyFrame: (i % (fps*2)) === 0 });
       vf.close();
-      if ((i & 127) === 0) await waitNextFrame();
+      if ((i & 127) === 0) await waitNextFrame(); // keep UI responsive
       if ((i & 15) === 0) updateProg(i);
     }
     await encoder.flush();
 
-    // Mux to WebM
+    // Mux to WebM (VP9)
     const muxer = new WebMMuxer({ width:w, height:h, fps, codec:'V_VP9' });
     for (const c of encoded){
       const data = new Uint8Array(c.byteLength); c.copyTo(data);
@@ -201,11 +143,10 @@ export class Exporter{
       if ('showSaveFilePicker' in window){
         const handle = await window.showSaveFilePicker({
           suggestedName: name,
-          types: [{ description: 'Video', accept: { [blob.type || 'video/mp4']: [`.${name.split('.').pop()}`] } }]
+          types: [{ description: 'WebM Video', accept: { 'video/webm': ['.webm'] } }]
         });
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
+        const w = await handle.createWritable();
+        await w.write(blob); await w.close();
         if (this.els?.dlArea) this.els.dlArea.innerHTML = `Saved: <b>${name}</b>`;
         return;
       }

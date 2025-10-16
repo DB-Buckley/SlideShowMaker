@@ -1,45 +1,32 @@
 // exporter.js — fast exporter using WebCodecs when available; fallback to MediaRecorder
-// ---------------------------------------------------------------------------------------
 import { waitNextFrame } from './utils.js';
 
 function supportsWebCodecs(){
   return 'VideoEncoder' in window && 'VideoFrame' in window;
 }
 
-// Minimal WebM muxer for VP9 CFR
 class WebMMuxer {
   constructor({width,height,fps,codec='V_VP9'}={}){
     this.width=width; this.height=height; this.fps=fps; this.codec=codec;
-    this.clusterTimecode=0; this.trackNum=1; this.timecodeScale=1_000_000; // 1ms
-    this.segment = [];
-    this.cluster = [];
-    this.frameCount = 0;
-    this._writeHeader();
+    this.clusterTimecode=0; this.trackNum=1; this.timecodeScale=1_000_000;
+    this.segment = []; this.cluster = []; this.frameCount = 0; this._writeHeader();
   }
   _u8(arr){ return new Uint8Array(arr); }
   _str(s){ return new TextEncoder().encode(s); }
   _vint(value){ const b = new Uint8Array(8); for (let i=7;i>=0;i--){ b[i]=value&0xFF; value>>>=8; } b[0]|=0x01; return b; }
   _u32(v){ const b=new Uint8Array(4); new DataView(b.buffer).setUint32(0,v); return b; }
   _u16(v){ const b=new Uint8Array(2); new DataView(b.buffer).setUint16(0,v); return b; }
-  _chunk(id, dataBytes){ const size = this._vint(dataBytes.length); return new Blob([new Uint8Array(id), size, dataBytes]); }
+  _chunk(id, bytes){ return new Blob([new Uint8Array(id), this._vint(bytes.length), bytes]); }
   _writeHeader(){
     const EBML = this._chunk([0x1A,0x45,0xDF,0xA3], new Uint8Array([
-      0x42,0x86,0x81,0x01,
-      0x42,0xF7,0x81,0x01,
-      0x42,0xF2,0x81,0x04,
-      0x42,0xF3,0x81,0x08,
-      0x42,0x82,0x84,0x77,0x65,0x62,0x6D
-    ]));
+      0x42,0x86,0x81,0x01,0x42,0xF7,0x81,0x01,0x42,0xF2,0x81,0x04,0x42,0xF3,0x81,0x08,0x42,0x82,0x84,0x77,0x65,0x62,0x6D]));
     const Video = new Blob([ new Uint8Array([0xE0]), this._vint(10),
       new Uint8Array([0xB0,0x82]), this._u16(this.width),
       new Uint8Array([0xBA,0x82]), this._u16(this.height) ]);
     const CodecID = this._chunk([0x86], this._str(this.codec));
     const TrackEntry = new Blob([ new Uint8Array([0xAE]), this._vint(35 + CodecID.size + Video.size),
-      new Uint8Array([0xD7,0x81,0x01]),
-      new Uint8Array([0x73,0xC5,0x81,0x01]),
-      new Uint8Array([0x83,0x81,0x01]),
-      new Uint8Array([0xE0]), this._vint(Video.size), Video,
-      new Uint8Array([0x86]), this._vint(CodecID.size), CodecID ]);
+      new Uint8Array([0xD7,0x81,0x01]), new Uint8Array([0x73,0xC5,0x81,0x01]), new Uint8Array([0x83,0x81,0x01]),
+      new Uint8Array([0xE0]), this._vint(Video.size), Video, new Uint8Array([0x86]), this._vint(CodecID.size), CodecID ]);
     const Tracks = new Blob([ new Uint8Array([0x16,0x54,0xAE,0x6B]), this._vint(TrackEntry.size), TrackEntry ]);
     const TimecodeScale = new Blob([new Uint8Array([0x2A,0xD7,0xB1]), this._vint(4), this._u32(this.timecodeScale)]);
     const MuxingApp = this._chunk([0x4D,0x80], this._str('slideshow-fast'));
@@ -51,17 +38,15 @@ class WebMMuxer {
   }
   startCluster(){
     this.clusterTimecode = Math.round(this.frameCount * (1000/this.fps));
-    const ClusterHeader = new Blob([
-      new Uint8Array([0x1F,0x43,0xB6,0x75]), new Uint8Array([0xFF]*8),
-      new Uint8Array([0xE7,0x81]), new Uint8Array([this.clusterTimecode & 0xFF])
-    ]);
+    const ClusterHeader = new Blob([ new Uint8Array([0x1F,0x43,0xB6,0x75]), new Uint8Array([0xFF]*8),
+      new Uint8Array([0xE7,0x81]), new Uint8Array([this.clusterTimecode & 0xFF]) ]);
     this.cluster = [ClusterHeader];
   }
-  addFrame(data, keyframe=false){
+  addFrame(data, key=false){
     if (!this.cluster.length) this.startCluster();
     const timecode = Math.round(this.frameCount * (1000/this.fps)) - this.clusterTimecode;
     const time = this._u16(timecode);
-    const flags = new Uint8Array([ keyframe?0x80:0x00 ]);
+    const flags = new Uint8Array([ key?0x80:0x00 ]);
     const block = new Blob([ new Uint8Array([0xA3]), this._vint(1 + 2 + 1 + data.byteLength),
       new Uint8Array([0x81]), time, flags, new Uint8Array(data) ]);
     this.cluster.push(block);
@@ -91,10 +76,10 @@ export class Exporter{
     const bitrate = Math.round(+settings.bitrate);
     const width = this.canvas.width, height = this.canvas.height;
 
-    const codec = 'vp09.00.10.08'; // VP9 profile 0
+    const codec = 'vp09.00.10.08';
     const encoded = [];
     const encoder = new VideoEncoder({
-      output: chunk=> encoded.push(chunk),
+      output: c=> encoded.push(c),
       error: e=> console.error(e),
     });
     await encoder.configure({ codec, width, height, bitrate, framerate: fps });
@@ -127,7 +112,6 @@ export class Exporter{
   }
 
   async _exportMediaRecorder(){
-    // realtime fallback
     const stream = this.canvas.captureStream(this.state.settings.fps);
     const rec = new MediaRecorder(stream, { mimeType:'video/webm;codecs=vp9', videoBitsPerSecond: this.state.settings.bitrate });
     const chunks = [];

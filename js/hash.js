@@ -7,7 +7,6 @@ export async function sha256Hex(buf){
 }
 
 export function aHashFromCanvas(canvas){
-  // downscale to 8x8 grayscale average hash
   const w = 8, h = 8;
   const off = document.createElement('canvas');
   off.width = w; off.height = h;
@@ -24,7 +23,7 @@ export function aHashFromCanvas(canvas){
   for (let i=0;i<grays.length;i++){
     bits = (bits<<1n) | (grays[i] >= avg ? 1n : 0n);
   }
-  return bits; // BigInt 64-bit
+  return bits;
 }
 
 export function hammingDistance64(a,b){

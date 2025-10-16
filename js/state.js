@@ -3,7 +3,7 @@
 export function createState(){
   const bus = new EventTarget();
   const state = {
-    slides: [], // {file, url, img}
+    slides: [], // {file, url, img, rotation}
     settings: {
       resPreset: 'sq',
       fps: 30,

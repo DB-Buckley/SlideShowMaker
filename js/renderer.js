@@ -1,4 +1,4 @@
-// renderer.js — lean drawing: single image per page, Ken Burns, crossfade only
+// renderer.js — supports per-slide rotation + Ken Burns + crossfade
 // ---------------------------------------------------------------------------------
 const RES = {
   sq:   { w:1080, h:1080 },
@@ -61,33 +61,44 @@ export class Renderer{
     // draw current
     if (curr && curr.img.complete){
       const p = clamp(local/hold, 0, 1); // 0..1 across hold
-      this.drawKenBurns(curr.img, {x:0,y:0,w:W,h:H}, p, motionAmt, 'inout');
+      this.drawKenBurnsRot(curr.img, p, motionAmt, (curr.rotation||0) * Math.PI/180);
     }
 
     // crossfade
     if (isXfade && next && next.img.complete){
       const txf = clamp((local - hold)/tr, 0, 1);
       ctx.globalAlpha = easeInOutQuad(txf);
-      this.drawKenBurns(next.img, {x:0,y:0,w:W,h:H}, 0, motionAmt, 'inout');
+      this.drawKenBurnsRot(next.img, 0, motionAmt, (next.rotation||0) * Math.PI/180);
       ctx.globalAlpha = 1;
     }
 
     ctx.restore();
   }
 
-  drawKenBurns(img, rect, p, amt, mode){
-    const {x,y,w,h} = rect;
+  drawKenBurnsRot(img, p, amt, angleRad){
+    // draw image with Ken Burns into the canvas center, then rotate by angleRad
+    const W = this.canvas.width, H = this.canvas.height;
+    const ctx = this.ctx;
     const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-    const cover = Math.max(w/iw, h/ih);
+
+    // Base cover scale (before motion)
+    const cover = Math.max(W/iw, H/ih);
     const startScale = cover * (1 + amt);
     const endScale   = cover * (1 - amt*0.5);
     const s = startScale + (endScale - startScale) * easeInOutQuad(p);
 
     const dw = iw * s, dh = ih * s;
     // subtle pan along diagonal
-    const offx = (w - dw)/2 + (w - dw) * (p - 0.5) * 0.2;
-    const offy = (h - dh)/2 + (h - dh) * (p - 0.5) * -0.2;
+    const offx = (W - dw)/2 + (W - dw) * (p - 0.5) * 0.2;
+    const offy = (H - dh)/2 + (H - dh) * (p - 0.5) * -0.2;
 
-    this.ctx.drawImage(img, x+offx, y+offy, dw, dh);
+    ctx.save();
+    // rotate about canvas center
+    ctx.translate(W/2, H/2);
+    ctx.rotate(angleRad);
+    // Translate so our drawImage top-left aligns after rotation (centered)
+    ctx.translate(-W/2, -H/2);
+    ctx.drawImage(img, offx, offy, dw, dh);
+    ctx.restore();
   }
 }

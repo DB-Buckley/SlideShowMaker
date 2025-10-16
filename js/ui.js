@@ -1,12 +1,10 @@
-// ui.js — uploader + controls bindings with auto-rotate + duplicate removal
-// ------------------------------------------------------------
+// ui.js — uploader + controls with auto-rotate, duplicate removal, and manual rotation
 import { createState } from './state.js';
 import { Renderer } from './renderer.js';
 import { Exporter } from './exporter.js';
 import { readExifOrientation, drawWithOrientation } from './exif.js';
 import { sha256Hex, aHashFromCanvas, hammingDistance64 } from './hash.js';
 
-function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
 function fmtTime(sec){ if (!isFinite(sec)||sec<=0) return '00:00'; const m=Math.floor(sec/60), s=Math.round(sec%60); return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
 
 export async function bootstrap(){
@@ -42,11 +40,10 @@ export async function bootstrap(){
   const exporter = new Exporter(els.canvas, renderer, state, els);
 
   // duplicate tracking
-  const exactHashes = new Set();     // SHA-256 of file bytes
-  const perceptual = [];             // {hash:BigInt, idx:number}
-  const PHASH_THRESHOLD = 5n;        // <=5 bits difference → consider duplicate
+  const exactHashes = new Set();
+  const perceptual = [];
+  const PHASH_THRESHOLD = 5n;
 
-  // toast helper
   function toast(msg){
     const t = document.createElement('div');
     t.className = 'toast';
@@ -56,7 +53,7 @@ export async function bootstrap(){
     setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=> t.remove(), 300); }, 2200);
   }
 
-  // --- Uploader
+  // Uploader
   els.pickBtn.onclick = ()=> els.fileInput.click();
   els.fileInput.onchange = ()=> addFiles(els.fileInput.files);
   ['dragover','dragenter'].forEach(ev=> els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3b82f6'; }));
@@ -68,46 +65,38 @@ export async function bootstrap(){
     let skipped = 0, added = 0;
 
     for (const f of list){
-      // Exact duplicate (file hash) check
       const fbuf = await f.arrayBuffer();
       const sha = await sha256Hex(fbuf);
       if (exactHashes.has(sha)){ skipped++; continue; }
 
-      // Load image for rotation + perceptual hash
       const imgUrl = URL.createObjectURL(new Blob([fbuf], { type:f.type }));
       const img = await new Promise((res, rej)=>{
         const im = new Image(); im.onload = ()=> res(im); im.onerror = rej; im.src = imgUrl;
       });
 
-      // Read orientation (only meaningful for JPEGs)
       let orientation = 1;
       try{ orientation = await readExifOrientation(fbuf); }catch{ orientation = 1; }
 
-      // Draw corrected onto offscreen canvas at preview/export stage size for consistent hashing
       const off = document.createElement('canvas');
       off.width = els.canvas.width; off.height = els.canvas.height;
       const octx = off.getContext('2d');
       octx.fillStyle = '#000'; octx.fillRect(0,0,off.width,off.height);
       drawWithOrientation(octx, img, orientation, off.width, off.height);
 
-      // Perceptual hash
       const ph = aHashFromCanvas(off);
-      // Check similarity with existing perceptual hashes
       const isNearDup = perceptual.some(p=> hammingDistance64(p.hash, ph) <= PHASH_THRESHOLD);
       if (isNearDup){ skipped++; continue; }
 
-      // Convert offscreen to blob for consistent orientation in renderer
       const blob = await new Promise(res=> off.toBlob(res, 'image/jpeg', 0.9));
       const fixedUrl = URL.createObjectURL(blob);
       const fixedImg = await new Promise((res, rej)=>{
         const im = new Image(); im.onload = ()=> res(im); im.onerror = rej; im.src = fixedUrl;
       });
 
-      // Track hashes
       exactHashes.add(sha);
       perceptual.push({ hash: ph, idx: state.slides.length });
 
-      state.slides.push({ file:f, url: fixedUrl, img: fixedImg });
+      state.slides.push({ file:f, url: fixedUrl, img: fixedImg, rotation: 0 });
       added++;
     }
 
@@ -124,13 +113,22 @@ export async function bootstrap(){
     state.slides.forEach((s, i)=>{
       const div = document.createElement('div'); div.className='th'; div.draggable=true;
       const im = document.createElement('img'); im.src = s.url; div.appendChild(im);
-      const rm = document.createElement('button'); rm.className='rm'; rm.textContent='×'; div.appendChild(rm);
+      const rm = document.createElement('button'); rm.className='rm'; rm.title='Remove'; rm.textContent='×'; div.appendChild(rm);
+      const rotL = document.createElement('button'); rotL.className='rot rotL'; rotL.title='Rotate left 90°'; rotL.textContent='⟲'; div.appendChild(rotL);
+      const rotR = document.createElement('button'); rotR.className='rot rotR'; rotR.title='Rotate right 90°'; rotR.textContent='⟳'; div.appendChild(rotR);
+
+      im.style.transition = 'transform .2s ease';
+      const applyThumbRot = ()=>{ im.style.transform = `rotate(${(state.slides[i].rotation||0)}deg)`; };
+      applyThumbRot();
+      rotL.onclick = ()=>{ state.slides[i].rotation = ((state.slides[i].rotation||0) - 90) % 360; applyThumbRot(); };
+      rotR.onclick = ()=>{ state.slides[i].rotation = ((state.slides[i].rotation||0) + 90) % 360; applyThumbRot(); };
+
       rm.onclick = ()=>{ state.slides.splice(i,1); renderThumbs(); updateTotal(); };
+
       div.addEventListener('dragstart', e=> e.dataTransfer.setData('text/plain', i));
       div.addEventListener('dragover', e=> e.preventDefault());
       div.addEventListener('drop', e=>{
-        e.preventDefault(); const from = +e.dataTransfer.getData('text/plain');
-        const to = i;
+        e.preventDefault(); const from = +e.dataTransfer.getData('text/plain'); const to = i;
         if (from===to) return;
         const [item] = state.slides.splice(from,1);
         state.slides.splice(to,0,item);
@@ -140,7 +138,6 @@ export async function bootstrap(){
     });
   }
 
-  // --- Controls
   const sync = ()=>{
     state.settings.resPreset = els.resPreset.value;
     state.settings.fps = +els.fps.value;
@@ -172,7 +169,7 @@ export async function bootstrap(){
     if (state.pageCount()) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev));
   }
 
-  // --- Preview transport
+  // Preview transport
   let playing = false;
   let start = 0;
   let baseT = 0;
@@ -186,42 +183,13 @@ export async function bootstrap(){
     requestAnimationFrame(tick);
   }
 
-  els.playBtn.onclick = ()=>{
-    if (playing) return;
-    playing = true;
-    start = performance.now();
-    baseT = parseFloat(els.seek.value)||0;
-    tick();
-  };
-  els.pauseBtn.onclick = ()=>{
-    if (!playing) return;
-    playing = false;
-    const t = (performance.now()-start)/1000 + baseT;
-    els.seek.value = String(t);
-    els.currTime.textContent = fmtTime(t);
-  };
-  els.stopBtn.onclick = ()=>{
-    playing = false;
-    els.seek.value = '0';
-    renderer.drawAt(0, Boolean(state.settings.loopPrev));
-    els.currTime.textContent = '00:00';
-  };
-  els.seek.addEventListener('input', ()=>{
-    if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev));
-    els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0);
-  });
+  els.playBtn.onclick = ()=>{ if (playing) return; playing = true; start = performance.now(); baseT = parseFloat(els.seek.value)||0; tick(); };
+  els.pauseBtn.onclick = ()=>{ if (!playing) return; playing = false; const t = (performance.now()-start)/1000 + baseT; els.seek.value = String(t); els.currTime.textContent = fmtTime(t); };
+  els.stopBtn.onclick = ()=>{ playing = false; els.seek.value = '0'; renderer.drawAt(0, Boolean(state.settings.loopPrev)); els.currTime.textContent = '00:00'; };
+  els.seek.addEventListener('input', ()=>{ if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev)); els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0); });
 
-  // --- Export
-  els.exportBtn.onclick = async ()=>{
-    els.progBar.style.width = '0%';
-    await exporter.export();
-    els.progBar.style.width = '100%';
-  };
+  els.exportBtn.onclick = async ()=>{ els.progBar.style.width = '0%'; await exporter.export(); els.progBar.style.width = '100%'; };
 
-  // initial
-  sync();
-  valSync();
-  renderer.drawAt(0, true);
-
+  sync(); valSync(); renderer.drawAt(0, true);
   return { state, renderer, exporter, els };
 }

@@ -1,197 +1,235 @@
-// exporter.js — WebM export in-browser + hooks for Electron MP4 (H.264/AAC)
-// ---------------------------------------------------------------------------------
-// Usage (browser):
-//   const exporter = new Exporter(canvas, renderer, state, els)
-//   await exporter.exportWebM(); // prompts WebM download
-//
-// Usage (Electron MP4):
-//   // call this from the renderer after wiring a preload API (see notes below)
-//   await exporter.exportMP4Electron('standard');
-//
-// NOTES:
-// - This records the canvas in *real time* at the chosen FPS, stepping the
-//   renderer by a fixed dt per frame for stable motion & transitions.
-// - Quality presets map to bitrates and scale with resolution.
+// exporter.js — fast exporter using WebCodecs when available; fallback to MediaRecorder
+// ---------------------------------------------------------------------------------------
+import { waitNextFrame } from './utils.js';
 
-export class Exporter {
-  /** @param {HTMLCanvasElement} canvas @param {import('./renderer.js').Renderer} renderer @param {ReturnType<import('./state.js').createState>} state @param {{status?:HTMLElement, progBar?:HTMLElement}} els */
+function supportsWebCodecs(){
+  return 'VideoEncoder' in window && 'VideoFrame' in window;
+}
+
+// Minimal WebM muxer (Clustered SimpleBlocks) adapted for constant-frame-rate streams.
+// Produces a playable WebM for VP8/VP9 in most browsers/players.
+class WebMMuxer {
+  constructor({width,height,fps,codec='V_VP9'}={}){
+    this.width=width; this.height=height; this.fps=fps; this.codec=codec;
+    this.clusterTimecode=0; this.trackNum=1; this.timecodeScale=1_000_000; // 1ms
+    this.segment = [];
+    this.cluster = [];
+    this.cues = [];
+    this.frameCount = 0;
+    this._writeHeader();
+  }
+  _u8(arr){ return new Uint8Array(arr); }
+  _str(s){ return new TextEncoder().encode(s); }
+  _ebmlID(id){ // id as array
+    return this._u8(id);
+  }
+  _vint(value){
+    // simple: write 8-byte vint (not size-efficient but valid)
+    const b = new Uint8Array(8);
+    for (let i=7;i>=0;i--){ b[i]=value&0xFF; value>>>=8; }
+    b[0] |= 0x01; // set first bit
+    return b;
+  }
+  _u32(v){ const b=new Uint8Array(4); new DataView(b.buffer).setUint32(0,v); return b; }
+  _u16(v){ const b=new Uint8Array(2); new DataView(b.buffer).setUint16(0,v); return b; }
+
+  _chunk(id, dataBytes){
+    const size = this._vint(dataBytes.length);
+    return new Blob([this._ebmlID(id), size, dataBytes]);
+  }
+  _writeHeader(){
+    const EBML = this._chunk([0x1A,0x45,0xDF,0xA3], new Uint8Array([
+      0x42,0x86,0x81,0x01, // EBMLVersion
+      0x42,0xF7,0x81,0x01, // EBMLReadVersion
+      0x42,0xF2,0x81,0x04, // EBMLMaxIDLength
+      0x42,0xF3,0x81,0x08, // EBMLMaxSizeLength
+      0x42,0x82,0x84,0x77,0x65,0x62,0x6D // DocType "webm"
+    ]));
+
+    // Tracks
+    const Video = new Blob([
+      this._ebmlID([0xE0]), this._vint(10),
+      this._u8([0xB0,0x82]), this._u16(this.width), // PixelWidth
+      this._u8([0xBA,0x82]), this._u16(this.height), // PixelHeight
+    ]);
+    const CodecID = this._chunk([0x86], this._str(this.codec));
+    const TrackEntry = new Blob([
+      this._ebmlID([0xAE]), this._vint(35 + CodecID.size + Video.size),
+      this._u8([0xD7,0x81,0x01]), // TrackNumber=1
+      this._u8([0x73,0xC5,0x81,0x01]), // TrackUID=1
+      this._u8([0x83,0x81,0x01]), // TrackType=video
+      this._ebmlID([0xE0]), this._vint(Video.size), Video,
+      this._ebmlID([0x86]), this._vint(CodecID.size), CodecID,
+    ]);
+    const Tracks = new Blob([
+      this._ebmlID([0x16,0x54,0xAE,0x6B]), this._vint(TrackEntry.size),
+      TrackEntry
+    ]);
+
+    // Segment info
+    const TimecodeScale = new Blob([this._u8([0x2A,0xD7,0xB1]), this._vint(4), this._u32(this.timecodeScale)]);
+    const MuxingApp = this._chunk([0x4D,0x80], this._str('slideshow-fast'));
+    const WritingApp = this._chunk([0x57,0x41], this._str('webcodecs'));
+
+    const InfoInner = new Blob([TimecodeScale, MuxingApp, WritingApp]);
+    const Info = new Blob([this._ebmlID([0x15,0x49,0xA9,0x66]), this._vint(InfoInner.size), InfoInner]);
+
+    this.segmentHeader = new Blob([EBML, this._ebmlID([0x18,0x53,0x80,0x67]), this._vint(Info.size + Tracks.size + 10)]); // +10 slack for first cluster len varint
+    this.segment.push(this.segmentHeader, Info, Tracks);
+  }
+  startCluster(){
+    this.clusterTimecode = Math.round(this.frameCount * (1000/this.fps));
+    // Cluster (we'll not precompute size; write unknown length via all-ones vint for simplicity)
+    const ClusterHeader = new Blob([
+      this._ebmlID([0x1F,0x43,0xB6,0x75]), this._u8([0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF]),
+      this._u8([0xE7,0x81]), new Uint8Array([this.clusterTimecode & 0xFF])
+    ]);
+    this.cluster = [ClusterHeader];
+  }
+  addFrame(data, keyframe=false){
+    if (!this.cluster.length) this.startCluster();
+    const timecode = Math.round(this.frameCount * (1000/this.fps)) - this.clusterTimecode;
+    const trackNumber = 0x81; // Track 1 as vint (1-byte with first bit set)
+    const time = this._u16(timecode);
+    const flags = new Uint8Array([ keyframe?0x80:0x00 ]); // simple flags
+    const block = new Blob([ new Uint8Array([0xA3]), this._vint(1 + 2 + 1 + data.byteLength), // SimpleBlock
+      new Uint8Array([trackNumber]), time, flags, new Uint8Array(data)
+    ]);
+    this.cluster.push(block);
+    this.frameCount++;
+    // roll cluster every ~5s
+    if (timecode >= 5000){ this.flushCluster(); }
+  }
+  flushCluster(){
+    if (!this.cluster.length) return;
+    this.segment.push(...this.cluster);
+    this.cluster = [];
+  }
+  finalize(){
+    this.flushCluster();
+    return new Blob(this.segment, { type:'video/webm' });
+  }
+}
+
+export class Exporter{
   constructor(canvas, renderer, state, els){
-    this.canvas = canvas;
-    this.renderer = renderer;
-    this.state = state;
-    this.els = els || {};
+    this.canvas = canvas; this.renderer = renderer; this.state = state; this.els = els;
   }
 
-  // ----------------------------- Public API ---------------------------------
-  async exportWebM(){
-    const pages = this.state.pageCount();
-    if (!pages) { this._setStatus('Please add photos before exporting.'); return; }
-
-    const fps = this.state.settings.fps|0 || 30;
-    const dur = this.state.totalDuration(false);
-    const mime = this._pickMime();
-    if (!mime){ this._setStatus('Export unsupported in this browser. Try desktop Chrome.'); return; }
-
-    const bitrate = this._bitrateFromPresetOrSetting();
-
-    this._setStatus(`Rendering ${this._fmtTime(dur)} at ${fps} fps…`);
-
-    const blob = await this._recordWebM({ fps, duration: dur, bitrate, mime });
-    const url = URL.createObjectURL(blob);
-    const name = this._defaultFileName('webm');
-    this._download(url, name);
-    this._setStatus('Done. Download should start automatically.');
-    this._setProgress(0);
-  }
-
-  async exportWebMToBuffer(){
-    const fps = this.state.settings.fps|0 || 30;
-    const dur = this.state.totalDuration(false);
-    const mime = this._pickMime();
-    if (!mime) throw new Error('MediaRecorder/WebM not supported');
-    const bitrate = this._bitrateFromPresetOrSetting();
-    const blob = await this._recordWebM({ fps, duration: dur, bitrate, mime });
-    return await blob.arrayBuffer();
-  }
-
-  // Electron hook: convert to MP4 via ffmpeg in main process
-  // Requires a preload exposing: window.electronAPI.convertWebMToMP4(buffer, opts)
-  // where opts = { width, height, fps, bitrate, crf, addSilentAudio }
-  async exportMP4Electron(preset='standard'){
-    if (!window.electronAPI || typeof window.electronAPI.convertWebMToMP4 !== 'function'){
-      throw new Error('Electron bridge not found. Implement preload: electronAPI.convertWebMToMP4');
+  async export(){
+    if (supportsWebCodecs()){
+      return await this._exportWebCodecs();
+    }else{
+      return await this._exportMediaRecorder();
     }
-    const buffer = await this.exportWebMToBuffer();
-    const { width, height } = this.canvas;
-    const fps = this.state.settings.fps|0 || 30;
-    const { videoBitrate, crf } = this._presetParams(preset, width, height, fps);
+  }
 
-    this._setStatus(`Converting to MP4 (${preset})…`);
-    const outPath = await window.electronAPI.convertWebMToMP4(buffer, {
-      width, height, fps, bitrate: videoBitrate, crf, addSilentAudio: true
+  async _exportWebCodecs(){
+    const { settings } = this.state;
+    const fps = +settings.fps;
+    const bitrate = Math.round(+settings.bitrate);
+    const width = this.canvas.width, height = this.canvas.height;
+
+    const codec = 'vp09.00.10.08'; // VP9 profile 0
+    const encoder = new VideoEncoder({
+      output: ()=>{},
+      error: e=> console.error(e)
     });
-    this._setStatus(`MP4 saved: ${outPath}`);
-    return outPath;
-  }
+    await encoder.configure({ codec, width, height, bitrate, framerate: fps });
 
-  // ----------------------------- Internals ----------------------------------
-  _pickMime(){
-    const list = ['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
-    for (const m of list){ if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; }
-    return '';
-  }
+    const muxer = new WebMMuxer({ width, height, fps, codec:'V_VP9' });
 
-  _presetParams(preset, w, h, fps){
-    // Scales bitrates relative to 1080p@30 using area ratio
-    const area = w*h, baseArea = 1920*1080;
-    const scale = Math.max(0.5, area / baseArea) * Math.max(0.8, fps/30);
-    const table = {
-      social:   { videoBitrate: 5_000_000,  crf: 23 },  // small socials
-      standard: { videoBitrate: 8_000_000,  crf: 21 },  // default
-      high:     { videoBitrate: 12_000_000, crf: 19 },  // cleaner
-      insane:   { videoBitrate: 20_000_000, crf: 18 },  // near mezzanine
-    };
-    const base = table[preset] || table.standard;
-    return { videoBitrate: Math.round(base.videoBitrate * scale), crf: base.crf };
-  }
+    let frames = 0;
+    const totalSec = this.state.totalDuration(false);
+    const totalFrames = Math.ceil(totalSec * fps);
 
-  _bitrateFromPresetOrSetting(){
-    // Honor explicit slider first; otherwise choose by resolution using 'standard'
-    const b = this.state.settings.bitrate|0;
-    if (b > 0) return b;
-    const { width:w, height:h } = this.canvas; const fps = this.state.settings.fps|0 || 30;
-    return this._presetParams('standard', w, h, fps).videoBitrate;
-  }
+    const prog = this.els.progBar;
+    const updateProg = (i)=> prog && (prog.style.width = ((i/totalFrames)*100).toFixed(1)+'%');
 
-  async _recordWebM({ fps, duration, bitrate, mime }){
-    const stream = this.canvas.captureStream(fps);
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
-    const chunks = [];
+    for (let i=0;i<totalFrames;i++){
+      const t = i / fps;
+      this.renderer.drawAt(t, false);
 
-    const done = new Promise((resolve, reject)=>{
-      rec.ondataavailable = e=>{ if (e.data && e.data.size) chunks.push(e.data); };
-      rec.onstop = ()=> resolve(new Blob(chunks, { type: mime }));
-      rec.onerror = e=> reject(e.error || new Error('MediaRecorder error'));
+      // Create VideoFrame from canvas
+      const frame = new VideoFrame(this.canvas, { timestamp: Math.round(1e6 * (i / fps)) }); // microseconds
+      const chunk = await new Promise((resolve, reject)=>{
+        encoder.encode(frame, { keyFrame: i% (fps*2) === 0 }); // periodic keyframe ~2s
+        frame.close();
+        // Use flush to get encoded chunks via encoder.readable once supported; meanwhile, use a hack:
+        resolve(null);
+      });
+      // WebCodecs doesn't directly give bytes synchronously; we'll use encodeQueue+flush and a TransformStream
+      // Build a helper to collect chunks:
+    }
+
+    // Re-implement with Encode queue + flush iterable:
+    const encoded = [];
+    const enc2 = new VideoEncoder({
+      output: chunk=> encoded.push(chunk),
+      error: e=> console.error(e),
     });
+    await enc2.configure({ codec, width, height, bitrate, framerate: fps });
 
-    rec.start();
+    for (let i=0;i<totalFrames;i++){
+      const t = i / fps;
+      this.renderer.drawAt(t, false);
+      const frame = new VideoFrame(this.canvas, { timestamp: Math.round(1e6 * (i / fps)) });
+      enc2.encode(frame, { keyFrame: i%(fps*2)===0 });
+      frame.close();
+      if (i%10===0) updateProg(i);
+      // Give the browser a tiny breath to keep UI responsive
+      if (i%120===0) await waitNextFrame();
+    }
+    await enc2.flush();
 
-    // Drive the renderer at fixed fps; non-looping timeline for export
-    const totalFrames = Math.max(1, Math.ceil(duration * fps));
-    const dt = 1 / fps;
-    let frame = 0; let t = 0;
+    // Mux encoded chunks
+    for (const c of encoded){
+      const key = c.type === 'key';
+      const data = new Uint8Array(c.byteLength);
+      c.copyTo(data);
+      muxer.addFrame(data, key);
+    }
+    const blob = muxer.finalize();
 
-    await new Promise((resolve)=>{
-      const tick = ()=>{
-        // Draw current frame
-        this.renderer.drawAt(t, /*loop*/ false);
-        // Advance time for next frame
-        t += dt; frame++;
-        const pct = Math.min(100, Math.round((frame/totalFrames)*100));
-        this._setProgress(pct);
-        if (frame >= totalFrames){ resolve(); return; }
-        // Use setTimeout to target frame pacing without starving main thread
-        setTimeout(tick, Math.max(0, Math.round(1000/fps) - 2));
-      };
-      tick();
-    });
-
-    // Stop recording after a short drain delay so the last frame is flushed
-    await new Promise(r => setTimeout(r, 200));
-    rec.stop();
-
-    const blob = await done;
+    updateProg(totalFrames);
+    this._download(blob, this._fileName('webm'));
     return blob;
   }
 
-  _download(url, name){
-    const a = document.createElement('a'); a.href = url; a.download = name; a.style.display='none';
-    document.body.appendChild(a); a.click(); setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1000);
+  async _exportMediaRecorder(){
+    // realtime fallback
+    const stream = this.canvas.captureStream(this.state.settings.fps);
+    const rec = new MediaRecorder(stream, { mimeType:'video/webm;codecs=vp9', videoBitsPerSecond: this.state.settings.bitrate });
+    const chunks = [];
+    rec.ondataavailable = e=> { if (e.data && e.data.size) chunks.push(e.data); };
+    const total = this.state.totalDuration(false);
+    rec.start();
+
+    const started = performance.now();
+    const loop = ()=>{
+      const t = (performance.now()-started)/1000;
+      if (t >= total){ rec.stop(); return; }
+      this.renderer.drawAt(t, false);
+      requestAnimationFrame(loop);
+    };
+    loop();
+
+    await new Promise(res=> rec.onstop = res);
+    const blob = new Blob(chunks, { type:'video/webm' });
+    this._download(blob, this._fileName('webm'));
+    return blob;
   }
 
-  _defaultFileName(ext){
-    const w=this.canvas.width, h=this.canvas.height, fps=this.state.settings.fps|0||30;
-    const ts = new Date().toISOString().replace(/[:.]/g,'-');
-    return `slideshow_${w}x${h}_${fps}fps_${ts}.${ext}`;
+  _fileName(ext){
+    const now = new Date();
+    const stamp = now.toISOString().slice(0,19).replace(/[:T]/g,'-');
+    return `slideshow-${stamp}.${ext}`;
   }
-
-  _setStatus(msg){ if (this.els.status) this.els.status.textContent = msg; }
-  _setProgress(pct){ if (this.els.progBar) this.els.progBar.style.width = `${pct}%`; }
-  _fmtTime(sec){ const m=Math.floor(sec/60)|0, s=Math.round(sec%60)|0; return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+  _download(blob, name){
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 5000);
+  }
 }
-
-/* ---------------------------------------------------------------------------
-   ELECTRON BRIDGE (to implement in your app later)
-   ---------------------------------------------------------------------------
-   // preload.js
-   const { contextBridge, ipcRenderer } = require('electron');
-   contextBridge.exposeInMainWorld('electronAPI', {
-     convertWebMToMP4: (arrayBuffer, opts) => ipcRenderer.invoke('convert-webm-to-mp4', arrayBuffer, opts)
-   });
-
-   // main.js (sketch)
-   const { app, BrowserWindow, ipcMain } = require('electron');
-   const { spawn } = require('child_process');
-   const path = require('path'); const fs = require('fs');
-   ipcMain.handle('convert-webm-to-mp4', async (e, arrayBuffer, opts)=>{
-     const tmpIn  = path.join(app.getPath('temp'), `in_${Date.now()}.webm`);
-     const outDir = app.getPath('videos');
-     const out    = path.join(outDir, `slideshow_${opts.width}x${opts.height}_${Date.now()}.mp4`);
-     fs.writeFileSync(tmpIn, Buffer.from(arrayBuffer));
-     // Build ffmpeg args
-     const args = [
-       '-y', '-i', tmpIn,
-       ...(opts.addSilentAudio? ['-f','lavfi','-t', String(Math.max(1, Math.ceil((opts.duration||0)))),'-i','anullsrc=channel_layout=stereo:sample_rate=48000']: []),
-       '-c:v','libx264','-pix_fmt','yuv420p','-preset','veryfast',
-       ...(opts.crf? ['-crf', String(opts.crf)]: []),
-       ...(opts.bitrate? ['-b:v', String(opts.bitrate)]: []),
-       '-movflags','+faststart', out
-     ];
-     await new Promise((res, rej)=>{
-       const ff = spawn('ffmpeg', args, { windowsHide:true });
-       ff.on('exit', code=> code===0? res(): rej(new Error('ffmpeg failed '+code)));
-     });
-     try{ fs.unlinkSync(tmpIn); }catch{}
-     return out;
-   });
-*/

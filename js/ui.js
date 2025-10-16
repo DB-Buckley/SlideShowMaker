@@ -1,4 +1,4 @@
-// ui.js — uploader + controls with auto-rotate, duplicate removal, and manual rotation
+// ui.js — uploader + controls with auto-rotate, duplicate removal, manual rotation, drag-to-reposition
 import { createState } from './state.js';
 import { Renderer } from './renderer.js';
 import { Exporter } from './exporter.js';
@@ -28,11 +28,13 @@ export async function bootstrap(){
     playBtn: document.getElementById('playBtn'),
     pauseBtn: document.getElementById('pauseBtn'),
     stopBtn: document.getElementById('stopBtn'),
+    adjustBtn: document.getElementById('adjustBtn'),
     seek: document.getElementById('seek'),
     currTime: document.getElementById('currTime'),
     totalTime: document.getElementById('totalTime'),
     exportBtn: document.getElementById('exportBtn'),
     progBar: document.getElementById('progBar'),
+    dlArea: document.getElementById('dlArea'),
   };
 
   const state = createState();
@@ -40,9 +42,9 @@ export async function bootstrap(){
   const exporter = new Exporter(els.canvas, renderer, state, els);
 
   // duplicate tracking
-  const exactHashes = new Set();
-  const perceptual = [];
-  const PHASH_THRESHOLD = 5n;
+  const exactHashes = new Set();           // SHA-256 of file bytes
+  const perceptual = [];                   // {hash:BigInt, idx:number}
+  const PHASH_THRESHOLD = 5n;              // <=5 bits → near duplicate
 
   function toast(msg){
     const t = document.createElement('div');
@@ -53,7 +55,7 @@ export async function bootstrap(){
     setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=> t.remove(), 300); }, 2200);
   }
 
-  // Uploader
+  // --- Uploader
   els.pickBtn.onclick = ()=> els.fileInput.click();
   els.fileInput.onchange = ()=> addFiles(els.fileInput.files);
   ['dragover','dragenter'].forEach(ev=> els.drop.addEventListener(ev, e=>{ e.preventDefault(); els.drop.style.borderColor = '#3b82f6'; }));
@@ -96,7 +98,7 @@ export async function bootstrap(){
       exactHashes.add(sha);
       perceptual.push({ hash: ph, idx: state.slides.length });
 
-      state.slides.push({ file:f, url: fixedUrl, img: fixedImg, rotation: 0 });
+      state.slides.push({ file:f, url: fixedUrl, img: fixedImg, rotation: 0, pan:{x:0,y:0} });
       added++;
     }
 
@@ -138,6 +140,7 @@ export async function bootstrap(){
     });
   }
 
+  // --- Controls
   const sync = ()=>{
     state.settings.resPreset = els.resPreset.value;
     state.settings.fps = +els.fps.value;
@@ -169,7 +172,61 @@ export async function bootstrap(){
     if (state.pageCount()) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev));
   }
 
-  // Preview transport
+  // --- Adjust (drag to reposition)
+  let adjusting = false;
+  els.adjustBtn.onclick = ()=>{
+    adjusting = !adjusting;
+    els.adjustBtn.classList.toggle('primary', adjusting);
+    const frame = document.querySelector('.canvasFrame');
+    const cnv = els.canvas;
+    frame.classList.toggle('adjusting', adjusting);
+    cnv.classList.toggle('adjusting', adjusting);
+  };
+
+  // Drag handling on canvas
+  let drag = null;
+  els.canvas.addEventListener('mousedown', (e)=>{
+    if (!adjusting) return;
+    e.preventDefault();
+    drag = { x:e.offsetX, y:e.offsetY };
+  });
+  window.addEventListener('mouseup', ()=>{ drag=null; });
+  els.canvas.addEventListener('mousemove', (e)=>{
+    if (!adjusting || !drag) return;
+    const hold = state.settings.holdSec, tr = state.settings.transitionSec, seg = hold+tr;
+    // best-effort index from current time in preview
+    const t = parseFloat(els.seek.value)||0;
+    let idx = 0;
+    if (state.slides.length){
+      idx = Math.min(state.slides.length-1, Math.floor(t / seg));
+    }
+    const slide = state.slides[idx];
+    if (!slide) return;
+
+    // compute mid-scale slack based on p=0.5 for consistent feel
+    const W = els.canvas.width, H = els.canvas.height;
+    const iw = slide.img.naturalWidth || slide.img.width;
+    const ih = slide.img.naturalHeight || slide.img.height;
+    const cover = Math.max(W/iw, H/ih);
+    const startScale = cover * (1 + state.settings.motionAmt);
+    const endScale   = cover * (1 - state.settings.motionAmt*0.5);
+    const s = startScale + (endScale - startScale) * 0.5;
+    const dw = iw * s, dh = ih * s;
+    const slackX = Math.max(1, dw - W);
+    const slackY = Math.max(1, dh - H);
+
+    const dx = e.offsetX - drag.x;
+    const dy = e.offsetY - drag.y;
+    drag = { x:e.offsetX, y:e.offsetY };
+
+    slide.pan = slide.pan || {x:0,y:0};
+    slide.pan.x = Math.max(-1, Math.min(1, slide.pan.x - (dx*2)/slackX ));
+    slide.pan.y = Math.max(-1, Math.min(1, slide.pan.y - (dy*2)/slackY ));
+
+    renderer.drawAt(t, Boolean(state.settings.loopPrev));
+  });
+
+  // --- Transport
   let playing = false;
   let start = 0;
   let baseT = 0;
@@ -188,8 +245,22 @@ export async function bootstrap(){
   els.stopBtn.onclick = ()=>{ playing = false; els.seek.value = '0'; renderer.drawAt(0, Boolean(state.settings.loopPrev)); els.currTime.textContent = '00:00'; };
   els.seek.addEventListener('input', ()=>{ if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev)); els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0); });
 
-  els.exportBtn.onclick = async ()=>{ els.progBar.style.width = '0%'; await exporter.export(); els.progBar.style.width = '100%'; };
+  // --- Export
+  els.exportBtn.onclick = async ()=>{
+    els.progBar.style.width = '0%';
+    try{
+      const blob = await exporter.export();
+      els.progBar.style.width = '100%';
+      if (blob) els.dlArea.innerHTML = 'Export complete.';
+    }catch(e){
+      // message is handled inside exporter (shows WebM fallback button)
+    }
+  };
 
-  sync(); valSync(); renderer.drawAt(0, true);
+  // initial
+  sync();
+  valSync();
+  renderer.drawAt(0, true);
+
   return { state, renderer, exporter, els };
 }

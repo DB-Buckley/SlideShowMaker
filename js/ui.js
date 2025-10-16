@@ -245,33 +245,65 @@ export async function bootstrap(){
   els.stopBtn.onclick = ()=>{ playing = false; els.seek.value = '0'; renderer.drawAt(0, Boolean(state.settings.loopPrev)); els.currTime.textContent = '00:00'; };
   els.seek.addEventListener('input', ()=>{ if (!playing) renderer.drawAt(parseFloat(els.seek.value)||0, Boolean(state.settings.loopPrev)); els.currTime.textContent = fmtTime(parseFloat(els.seek.value)||0); });
 
-  // --- Export
-els.exportBtn.onclick = async ()=>{
-  els.progBar.style.width = '0%';
-  // disable interactions during export
-  const prevDisabled = els.exportBtn.disabled;
-  els.exportBtn.disabled = true;
-  els.playBtn.disabled = true;
-  els.pauseBtn.disabled = true;
-  els.stopBtn.disabled = true;
-  els.adjustBtn.disabled = true;
+   // --- Export
+  let lastWebM = null;
 
-  try{
-    await exporter.export(); // deterministic paths inside exporter
-    els.progBar.style.width = '100%';
-    els.dlArea.innerHTML = 'Export complete.';
-  }catch(e){
-    console.error(e);
-    els.dlArea.innerHTML = '<b>Export failed:</b> ' + (e?.message || e);
-  }finally{
-    els.exportBtn.disabled = prevDisabled;
-    els.playBtn.disabled = false;
-    els.pauseBtn.disabled = false;
-    els.stopBtn.disabled = false;
-    els.adjustBtn.disabled = false;
-  }
-};
+  els.convertBtn.onclick = async ()=>{
+    if (!lastWebM){
+      els.dlArea.innerHTML = 'Convert: export a WebM first.';
+      return;
+    }
+    els.convertBtn.disabled = true;
+    els.dlArea.innerHTML = 'Converting to MP4… (first run downloads ffmpeg.wasm; may take a moment)';
+    try{
+      const mp4 = await exporter.convertWebMtoMP4(lastWebM, p=>{
+        if (p && typeof p.ratio === 'number'){
+          els.progBar.style.width = Math.min(100, Math.round(p.ratio*100)) + '%';
+        }
+      });
+      els.progBar.style.width = '100%';
+      await exporter._download(mp4, 'slideshow-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.mp4');
+      els.dlArea.innerHTML = 'MP4 saved.';
+    }catch(e){
+      console.error(e);
+      els.dlArea.innerHTML = '<b>MP4 conversion failed:</b> ' + (e?.message || e);
+    }finally{
+      els.convertBtn.disabled = false;
+    }
+  };
 
+  els.exportBtn.onclick = async ()=>{
+    els.progBar.style.width = '0%';
+    // disable interactions during export
+    const toDisable = [els.exportBtn, els.playBtn, els.pauseBtn, els.stopBtn, els.adjustBtn, els.convertBtn];
+    toDisable.forEach(b=> b.disabled = true);
+
+    try{
+      const webm = await exporter.exportWebM();
+      lastWebM = webm;
+      els.dlArea.innerHTML = 'WebM export complete.';
+      els.convertBtn.disabled = false;
+
+      if (els.autoMp4.checked){
+        els.dlArea.innerHTML = 'WebM saved. Converting to MP4… (first run downloads ffmpeg.wasm)';
+        const mp4 = await exporter.convertWebMtoMP4(webm, p=>{
+          if (p && typeof p.ratio === 'number'){
+            els.progBar.style.width = Math.min(100, Math.round(p.ratio*100)) + '%';
+          }
+        });
+        els.progBar.style.width = '100%';
+        await exporter._download(mp4, 'slideshow-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.mp4');
+        els.dlArea.innerHTML = 'WebM + MP4 saved.';
+      }else{
+        els.dlArea.innerHTML += ' You can convert to MP4 anytime.';
+      }
+    }catch(e){
+      console.error(e);
+      els.dlArea.innerHTML = '<b>Export failed:</b> ' + (e?.message || e);
+    }finally{
+      toDisable.forEach(b=> b.disabled = false);
+    }
+  };
 
   // initial
   sync();

@@ -1,4 +1,4 @@
-// hash.js — exact (SHA-256) and perceptual (aHash) hashing helpers
+// hash.js — exact (SHA-256) and perceptual (aHash) helpers
 export async function sha256Hex(buf){
   const ab = buf instanceof ArrayBuffer ? buf : await buf.arrayBuffer();
   const hash = await crypto.subtle.digest('SHA-256', ab);
@@ -23,7 +23,7 @@ export function aHashFromCanvas(canvas){
   for (let i=0;i<grays.length;i++){
     bits = (bits<<1n) | (grays[i] >= avg ? 1n : 0n);
   }
-  return bits;
+  return bits; // BigInt 64-bit
 }
 
 export function hammingDistance64(a,b){

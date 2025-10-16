@@ -1,15 +1,12 @@
-// exporter.js — Deterministic WebCodecs export (VP9 → WebM).
-// No MediaRecorder. No realtime. Frame-accurate and glitch-free across browsers.
-
+// exporter.js — Deterministic WebM export + optional MP4 conversion (ffmpeg.wasm)
 import { waitNextFrame } from './utils.js';
 
-/*** Minimal WebM muxer for VP9 CFR ***/
+// --- Minimal WebM muxer for VP9 CFR (unchanged & reliable)
 class WebMMuxer {
   constructor({width,height,fps,codec='V_VP9'}={}) {
     this.width=width; this.height=height; this.fps=fps; this.codec=codec;
     this.timecodeScale=1_000_000; // 1ms
-    this.segment=[]; this.cluster=[]; this.clusterTimecode=0;
-    this.frameCount=0;
+    this.segment=[]; this.cluster=[]; this.clusterTimecode=0; this.frameCount=0;
     this._writeHeader();
   }
   _str(s){ return new TextEncoder().encode(s); }
@@ -22,17 +19,15 @@ class WebMMuxer {
       0x42,0x86,0x81,0x01, 0x42,0xF7,0x81,0x01, 0x42,0xF2,0x81,0x04,
       0x42,0xF3,0x81,0x08, 0x42,0x82,0x84,0x77,0x65,0x62,0x6D
     ]));
-    const Video = new Blob([
-      new Uint8Array([0xE0]), this._vint(10),
+    const Video = new Blob([ new Uint8Array([0xE0]), this._vint(10),
       new Uint8Array([0xB0,0x82]), this._u16(this.width),
-      new Uint8Array([0xBA,0x82]), this._u16(this.height)
-    ]);
+      new Uint8Array([0xBA,0x82]), this._u16(this.height) ]);
     const CodecID = this._chunk([0x86], this._str(this.codec));
     const TrackEntry = new Blob([
       new Uint8Array([0xAE]), this._vint(35 + CodecID.size + Video.size),
-      new Uint8Array([0xD7,0x81,0x01]), // TrackNumber
-      new Uint8Array([0x73,0xC5,0x81,0x01]), // TrackUID
-      new Uint8Array([0x83,0x81,0x01]), // Type = video
+      new Uint8Array([0xD7,0x81,0x01]),
+      new Uint8Array([0x73,0xC5,0x81,0x01]),
+      new Uint8Array([0x83,0x81,0x01]),
       new Uint8Array([0xE0]), this._vint(Video.size), Video,
       new Uint8Array([0x86]), this._vint(CodecID.size), CodecID
     ]);
@@ -66,14 +61,14 @@ class WebMMuxer {
     const block = new Blob([
       new Uint8Array([0xA3]),
       this._vint(1 + 2 + 1 + data.byteLength),
-      new Uint8Array([0x81]), // Track 1
+      new Uint8Array([0x81]),
       this._u16(tc),
       new Uint8Array([ key?0x80:0x00 ]),
       new Uint8Array(data)
     ]);
     this.cluster.push(block);
     this.frameCount++;
-    if (tc >= 5000){ this._flushCluster(); } // new cluster every ~5s
+    if (tc >= 5000){ this._flushCluster(); }
   }
   _flushCluster(){ if (this.cluster.length){ this.segment.push(...this.cluster); this.cluster=[]; } }
   finalize(){ this._flushCluster(); return new Blob(this.segment, { type:'video/webm' }); }
@@ -84,16 +79,13 @@ function supportsWebCodecs(){ return 'VideoEncoder' in window && 'VideoFrame' in
 export class Exporter{
   constructor(canvas, renderer, state, els){
     this.canvas = canvas; this.renderer = renderer; this.state = state; this.els = els;
+    this.lastWebM = null; // store last export for manual conversion
   }
 
-  async export(){
+  async exportWebM(){
     if (!supportsWebCodecs()){
       throw new Error('WebCodecs not supported in this browser.');
     }
-    return await this._exportWebMDeterministic();
-  }
-
-  async _exportWebMDeterministic(){
     const fps = +this.state.settings.fps;
     const bitrate = Math.round(+this.state.settings.bitrate);
     const w = this.canvas.width, h = this.canvas.height;
@@ -111,26 +103,80 @@ export class Exporter{
     const updateProg = (i)=> prog && (prog.style.width = ((i/totalFrames)*100).toFixed(1)+'%');
 
     for (let i=0;i<totalFrames;i++){
-      const t = i / fps;                   // exact timestamp
-      this.renderer.drawAt(t, false);      // deterministic render
+      const t = i / fps;
+      this.renderer.drawAt(t, false);
       const vf = new VideoFrame(this.canvas, { timestamp: Math.round(1e6 * t) });
       encoder.encode(vf, { keyFrame: (i % (fps*2)) === 0 });
       vf.close();
-      if ((i & 127) === 0) await waitNextFrame(); // keep UI responsive
+      if ((i & 127) === 0) await waitNextFrame();
       if ((i & 15) === 0) updateProg(i);
     }
     await encoder.flush();
 
-    // Mux to WebM (VP9)
     const muxer = new WebMMuxer({ width:w, height:h, fps, codec:'V_VP9' });
     for (const c of encoded){
       const data = new Uint8Array(c.byteLength); c.copyTo(data);
       muxer.addFrame(data, c.type === 'key');
     }
-    const blob = muxer.finalize();
-    await this._download(blob, this._fileName('webm'));
+    const webm = muxer.finalize();
+    this.lastWebM = webm;
+
+    await this._download(webm, this._fileName('webm'));
     updateProg(totalFrames);
-    return blob;
+    return webm;
+  }
+
+  // -------- MP4 conversion via ffmpeg.wasm (runs in browser) --------
+  async convertWebMtoMP4(webmBlob, onProgress){
+    const { createFFmpeg } = await this._ensureFFmpeg();
+    const ffmpeg = createFFmpeg({
+      log: true,
+      corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js',
+      progress: p => { if (onProgress) onProgress(p); }
+    });
+    await ffmpeg.load();
+
+    const data = new Uint8Array(await webmBlob.arrayBuffer());
+    ffmpeg.FS('writeFile', 'in.webm', data);
+
+    // H.264 MP4 with widely compatible pixel format and faststart
+    await ffmpeg.run(
+      '-i','in.webm',
+      '-c:v','libx264',
+      '-pix_fmt','yuv420p',
+      '-crf','18',
+      '-preset','veryfast',
+      '-movflags','+faststart',
+      'out.mp4'
+    );
+    const mp4 = ffmpeg.FS('readFile','out.mp4');
+    const mp4Blob = new Blob([mp4.buffer], { type:'video/mp4' });
+
+    // cleanup
+    try{ ffmpeg.FS('unlink','in.webm'); }catch{}
+    try{ ffmpeg.FS('unlink','out.mp4'); }catch{}
+
+    return mp4Blob;
+  }
+
+  async _ensureFFmpeg(){
+    // Lazy-load browser bundle of @ffmpeg/ffmpeg
+    if (window.FFmpeg && window.FFmpeg.createFFmpeg){
+      return { createFFmpeg: window.FFmpeg.createFFmpeg };
+    }
+    await this._loadScript('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js');
+    if (!window.FFmpeg || !window.FFmpeg.createFFmpeg){
+      throw new Error('Failed to load FFmpeg (wasm).');
+    }
+    return { createFFmpeg: window.FFmpeg.createFFmpeg };
+  }
+
+  _loadScript(src){
+    return new Promise((resolve, reject)=>{
+      const s = document.createElement('script');
+      s.src = src; s.async = true; s.onload = resolve; s.onerror = ()=> reject(new Error('Failed to load '+src));
+      document.head.appendChild(s);
+    });
   }
 
   _fileName(ext){
@@ -143,7 +189,7 @@ export class Exporter{
       if ('showSaveFilePicker' in window){
         const handle = await window.showSaveFilePicker({
           suggestedName: name,
-          types: [{ description: 'WebM Video', accept: { 'video/webm': ['.webm'] } }]
+          types: [{ description: 'Video', accept: { [blob.type || 'video/webm']: [`.${name.split('.').pop()}`] } }]
         });
         const w = await handle.createWritable();
         await w.write(blob); await w.close();
